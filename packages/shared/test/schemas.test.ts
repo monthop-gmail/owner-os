@@ -4,6 +4,7 @@ import {
   AssetUnitSchema,
   CompleteWorkOrderInput,
   CreateAssetInput,
+  CreateAssetUnitInput,
   LngLatSchema,
   PointSchema,
   PolygonSchema,
@@ -129,5 +130,14 @@ describe("inputs", () => {
 
   it("rejects CreateAssetInput that includes an id (strict)", () => {
     expect(CreateAssetInput.safeParse({ id: "x", name: "บ้าน", kind: "property" }).success).toBe(false);
+  });
+
+  it("rejects CreateAssetUnitInput that includes an id (strict)", () => {
+    const input = { id: "x", name: "แปลง A", unit_type: "plot", boundary: square };
+    expect(CreateAssetUnitInput.safeParse(input).success).toBe(false);
+  });
+
+  it("rejects CompleteWorkOrderInput that includes inside_geofence (server-computed)", () => {
+    expect(CompleteWorkOrderInput.safeParse({ ...complete, inside_geofence: true }).success).toBe(false);
   });
 });
