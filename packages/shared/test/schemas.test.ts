@@ -5,6 +5,7 @@ import {
   CompleteWorkOrderInput,
   CreateAssetInput,
   CreateAssetUnitInput,
+  CreateWorkOrderInput,
   LngLatSchema,
   PointSchema,
   PolygonSchema,
@@ -139,5 +140,14 @@ describe("inputs", () => {
 
   it("rejects CompleteWorkOrderInput that includes inside_geofence (server-computed)", () => {
     expect(CompleteWorkOrderInput.safeParse({ ...complete, inside_geofence: true }).success).toBe(false);
+  });
+
+  it("accepts a valid CreateWorkOrderInput", () => {
+    expect(CreateWorkOrderInput.safeParse({ title: "ตัดหญ้า" }).success).toBe(true);
+    expect(CreateWorkOrderInput.safeParse({ title: "ตัดหญ้า", unit_id: "u-1", due_at: NOW }).success).toBe(true);
+  });
+
+  it("rejects CreateWorkOrderInput with unknown keys (strict)", () => {
+    expect(CreateWorkOrderInput.safeParse({ title: "ตัดหญ้า", status: "verified" }).success).toBe(false);
   });
 });

@@ -73,6 +73,12 @@ export const CompleteWorkOrderInput = z.strictObject({
   captured_at: IsoDateTimeSchema,
 });
 
+export const CreateWorkOrderInput = z.strictObject({
+  title: z.string().min(1).max(200),
+  unit_id: IdSchema.optional(),
+  due_at: IsoDateTimeSchema.optional(),
+});
+
 export type AssetKind = z.infer<typeof AssetKind>;
 export type AssetUnitType = z.infer<typeof AssetUnitType>;
 export type WorkOrderStatus = z.infer<typeof WorkOrderStatus>;
@@ -83,3 +89,4 @@ export type Evidence = z.infer<typeof EvidenceSchema>;
 export type CreateAssetInput = z.infer<typeof CreateAssetInput>;
 export type CreateAssetUnitInput = z.infer<typeof CreateAssetUnitInput>;
 export type CompleteWorkOrderInput = z.infer<typeof CompleteWorkOrderInput>;
+export type CreateWorkOrderInput = z.infer<typeof CreateWorkOrderInput>;

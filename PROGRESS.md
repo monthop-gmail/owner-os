@@ -8,7 +8,7 @@
 - [x] Task 1.4: schema.ts (assets, asset_units, work_orders, work_order_evidence, farm_crop_cycles) + initial Drizzle migration SQL
 
 ## Milestone 2: Proof-of-Work Spike
-- [ ] Task 2.1: POST /api/assets, POST /api/assets/:id/units
+- [x] Task 2.1: POST /api/assets, POST /api/assets/:id/units
 - [ ] Task 2.2: POST /api/tasks/:id/upload-ticket + PUT /api/tasks/:id/complete (upload ผ่าน Worker → R2, geofence ด้วย Turf + accuracy + buffer)
 - [ ] Task 2.4: auth ขั้นต่ำ (bearer token จาก Worker secret) — ต้องเสร็จก่อน deploy ครั้งแรก
 - [ ] Task 2.3: /test-camera หน้า HTML ทดสอบ GPS + กล้อง + อัปโหลด (ทดสอบบนมือถือได้หลัง deploy HTTPS)
