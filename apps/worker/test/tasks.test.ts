@@ -2,7 +2,7 @@ import type { Asset, AssetUnit, Evidence, Polygon, WorkOrder } from "@owner-os/s
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Env } from "../src/env";
 import { app } from "../src/index";
-import { createTestEnv, type TestEnv } from "./d1";
+import { authHeader, createTestEnv, type TestEnv } from "./d1";
 
 let testEnv: TestEnv;
 let env: Env;
@@ -39,9 +39,9 @@ const FAKE_JPEG = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46
 const NOW = "2026-10-23T09:00:00.000Z";
 
 async function request(method: string, path: string, body?: unknown, contentType = "application/json") {
-  const init: RequestInit = { method };
+  const init: RequestInit = { method, headers: authHeader };
   if (body !== undefined) {
-    init.headers = { "content-type": contentType };
+    init.headers = { ...authHeader, "content-type": contentType };
     init.body = body instanceof Uint8Array || typeof body === "string" ? body : JSON.stringify(body);
   }
   return app.request(path, init, env);
@@ -194,6 +194,14 @@ describe("PUT complete", () => {
     const body = await json<{ evidence: Evidence }>(await complete(wo.id, fix(t.evidence_id, eastBy(10))), 200);
     expect(body.evidence.inside_geofence).toBe(false);
     expect(body.evidence.distance_outside_m).toBeCloseTo(10, 0);
+
+    const row = await env.DB.prepare(
+      "SELECT inside_geofence, distance_outside_m FROM work_order_evidence WHERE id = ?",
+    )
+      .bind(t.evidence_id)
+      .first<{ inside_geofence: number; distance_outside_m: number }>();
+    expect(row?.inside_geofence).toBe(0);
+    expect(row?.distance_outside_m).toBeCloseTo(10, 0);
   });
 
   it("fails 100 m outside with 422 and ~100 m distance, without touching the DB", async () => {

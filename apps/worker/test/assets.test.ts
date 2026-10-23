@@ -2,7 +2,7 @@ import type { Asset, AssetUnit, Polygon, WorkOrder } from "@owner-os/shared";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Env } from "../src/env";
 import { app } from "../src/index";
-import { createTestEnv, type TestEnv } from "./d1";
+import { authHeader, createTestEnv, type TestEnv } from "./d1";
 
 let testEnv: TestEnv;
 let env: Env;
@@ -22,7 +22,7 @@ function post(path: string, body: unknown): Promise<Response> {
       path,
       {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: { ...authHeader, "content-type": "application/json" },
         body: typeof body === "string" ? body : JSON.stringify(body),
       },
       env,

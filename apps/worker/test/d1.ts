@@ -21,11 +21,15 @@ async function applyMigrations(db: D1Database): Promise<void> {
   }
 }
 
+/** Test-only bearer token, set directly on the env (never read from .dev.vars). */
+export const TEST_API_TOKEN = "test-token-not-a-secret";
+export const authHeader = { authorization: `Bearer ${TEST_API_TOKEN}` };
+
 export type TestEnv = { env: Env; dispose: () => Promise<void> };
 
 /** Real local D1 + R2 via Miniflare (in-memory, no remote bindings) with all migrations applied. */
 export async function createTestEnv(): Promise<TestEnv> {
   const proxy = await getPlatformProxy<Env>({ persist: false, remoteBindings: false });
   await applyMigrations(proxy.env.DB);
-  return { env: proxy.env, dispose: () => proxy.dispose() };
+  return { env: { ...proxy.env, API_TOKEN: TEST_API_TOKEN }, dispose: () => proxy.dispose() };
 }
