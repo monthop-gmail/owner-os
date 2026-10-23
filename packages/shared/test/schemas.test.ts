@@ -47,7 +47,7 @@ const workOrder = {
   created_at: NOW,
 };
 
-const complete = { lat: 13.75, lng: 100.55, accuracy_m: 8, captured_at: NOW };
+const complete = { evidence_id: "ev-1", lat: 13.75, lng: 100.55, accuracy_m: 8, captured_at: NOW };
 
 describe("geo", () => {
   it("accepts a closed polygon", () => {
@@ -149,5 +149,10 @@ describe("inputs", () => {
 
   it("rejects CreateWorkOrderInput with unknown keys (strict)", () => {
     expect(CreateWorkOrderInput.safeParse({ title: "ตัดหญ้า", status: "verified" }).success).toBe(false);
+  });
+
+  it("rejects CompleteWorkOrderInput without evidence_id", () => {
+    const { evidence_id: _omit, ...noEvidence } = complete;
+    expect(CompleteWorkOrderInput.safeParse(noEvidence).success).toBe(false);
   });
 });

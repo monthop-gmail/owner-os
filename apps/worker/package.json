@@ -12,6 +12,9 @@
   "dependencies": {
     "@owner-os/shared": "workspace:*",
     "@turf/area": "^7.4.0",
+    "@turf/boolean-point-in-polygon": "^7.4.0",
+    "@turf/helpers": "^7.4.0",
+    "@turf/point-to-polygon-distance": "^7.4.0",
     "drizzle-orm": "^0.45.4",
     "hono": "^4.13.13"
   },

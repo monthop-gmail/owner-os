@@ -67,6 +67,7 @@ export const CreateAssetUnitInput = z.strictObject({
 });
 
 export const CompleteWorkOrderInput = z.strictObject({
+  evidence_id: IdSchema,
   lat: LatSchema,
   lng: LngSchema,
   accuracy_m: z.number().min(0),

@@ -1,40 +1,19 @@
 import type { Asset, AssetUnit, Polygon, WorkOrder } from "@owner-os/shared";
-import { getPlatformProxy, type PlatformProxy } from "wrangler";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Env } from "../src/env";
 import { app } from "../src/index";
+import { createTestEnv, type TestEnv } from "./d1";
 
-// tsconfig only loads workers types, so node:fs is imported untyped (tests run under Node).
-type Fs = {
-  readdirSync(path: URL): string[];
-  readFileSync(path: URL, encoding: "utf8"): string;
-};
-const fs = (await import("node:fs" as string)) as Fs;
-const migrationsDir = new URL("../migrations/", (import.meta as ImportMeta & { url: string }).url);
-
-let proxy: PlatformProxy<Env>;
+let testEnv: TestEnv;
 let env: Env;
 
-async function applyMigrations(db: D1Database): Promise<void> {
-  const files = fs.readdirSync(migrationsDir).filter((f) => f.endsWith(".sql")).sort();
-  for (const file of files) {
-    const statements = fs
-      .readFileSync(new URL(file, migrationsDir), "utf8")
-      .split("--> statement-breakpoint")
-      .map((s) => s.trim())
-      .filter((s) => s.length > 0);
-    await db.batch(statements.map((s) => db.prepare(s)));
-  }
-}
-
 beforeAll(async () => {
-  proxy = await getPlatformProxy<Env>({ persist: false, remoteBindings: false });
-  env = proxy.env;
-  await applyMigrations(env.DB);
+  testEnv = await createTestEnv();
+  env = testEnv.env;
 });
 
 afterAll(async () => {
-  await proxy?.dispose();
+  await testEnv?.dispose();
 });
 
 function post(path: string, body: unknown): Promise<Response> {
