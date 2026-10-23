@@ -5,7 +5,7 @@
 - [x] Task 1.1: pnpm-workspace.yaml, root package.json, tsconfig.base.json
 - [x] Task 1.2: packages/shared — types + Zod schemas (Asset, AssetUnit, WorkOrder, Evidence)
 - [x] Task 1.3: apps/worker — Hono + Drizzle config + wrangler.toml (D1 + R2 bindings, local only)
-- [ ] Task 1.4: schema.ts (assets, asset_units, work_orders, work_order_evidence, farm_crop_cycles) + initial Drizzle migration SQL
+- [x] Task 1.4: schema.ts (assets, asset_units, work_orders, work_order_evidence, farm_crop_cycles) + initial Drizzle migration SQL
 
 ## Milestone 2: Proof-of-Work Spike
 - [ ] Task 2.1: POST /api/assets, POST /api/assets/:id/units
