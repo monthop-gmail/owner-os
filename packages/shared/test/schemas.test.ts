@@ -197,6 +197,7 @@ describe("crop cycles", () => {
       crop: "ทุเรียน",
       variety: "หมอนทอง",
       status: "planned",
+      template_key: null,
       started_at: null,
       expected_harvest_at: null,
       ended_at: null,

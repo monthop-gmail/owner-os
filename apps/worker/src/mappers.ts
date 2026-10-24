@@ -74,6 +74,7 @@ export function cropCycleToApi(row: CropCycleRow): CropCycle {
     crop: row.crop,
     variety: row.variety,
     status: row.status,
+    template_key: row.template_key,
     started_at: toIsoOrNull(row.started_at),
     expected_harvest_at: toIsoOrNull(row.expected_harvest_at),
     ended_at: toIsoOrNull(row.ended_at),

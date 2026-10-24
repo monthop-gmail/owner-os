@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { TemplateKey } from "./crop-templates";
 import { LatSchema, LngSchema, PolygonSchema } from "./geo";
 
 // Field names are snake_case to match the D1 columns (Task 1.4).
@@ -48,6 +49,7 @@ export const CropCycleSchema = z.object({
   crop: z.string().min(1).max(100),
   variety: z.string().nullable(),
   status: CropCycleStatus,
+  template_key: TemplateKey.nullable(),
   started_at: IsoDateTimeSchema.nullable(),
   expected_harvest_at: IsoDateTimeSchema.nullable(),
   ended_at: IsoDateTimeSchema.nullable(),
@@ -114,6 +116,7 @@ export const CreateCropCycleInput = z.strictObject({
   crop: z.string().min(1).max(100),
   variety: z.string().min(1).max(100).optional(),
   expected_harvest_at: IsoDateTimeSchema.optional(),
+  template_key: TemplateKey.optional(),
 });
 
 export const TransitionCropCycleInput = z.strictObject({

@@ -1,10 +1,17 @@
-import { canTransition, CreateCropCycleInput, TransitionCropCycleInput, type CropCycleStatus } from "@owner-os/shared";
-import { and, desc, eq, sql } from "drizzle-orm";
+import {
+  canTransition,
+  CreateCropCycleInput,
+  CROP_TEMPLATES,
+  stageTasks,
+  TransitionCropCycleInput,
+  type CropCycleStatus,
+} from "@owner-os/shared";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/d1";
 import { Hono, type Context } from "hono";
-import { asset_units, farm_crop_cycles } from "../db/schema";
+import { asset_units, farm_crop_cycles, work_orders } from "../db/schema";
 import type { Env } from "../env";
-import { cropCycleToApi, toMs } from "../mappers";
+import { cropCycleToApi, toMs, workOrderToApi } from "../mappers";
 
 type AppContext = Context<{ Bindings: Env }>;
 
@@ -40,13 +47,13 @@ unitCropCyclesRoutes.post("/:id/crop-cycles", async (c) => {
   if (!(await unitExists(c, unitId))) return unitNotFound(c);
   const parsed = await parseBody(c, CreateCropCycleInput);
   if (!parsed.ok) return parsed.res;
-  const { crop, variety, expected_harvest_at } = parsed.data;
+  const { crop, variety, expected_harvest_at, template_key } = parsed.data;
 
   // One open (not closed) cycle per unit, enforced in the same statement as the insert.
   const id = crypto.randomUUID();
   const result = await drizzle(c.env.DB).run(sql`
-    INSERT INTO ${farm_crop_cycles} (id, unit_id, crop, variety, status, expected_harvest_at, created_at)
-    SELECT ${id}, ${unitId}, ${crop}, ${variety ?? null}, 'planned',
+    INSERT INTO ${farm_crop_cycles} (id, unit_id, crop, variety, status, template_key, expected_harvest_at, created_at)
+    SELECT ${id}, ${unitId}, ${crop}, ${variety ?? null}, 'planned', ${template_key ?? null},
            ${expected_harvest_at === undefined ? null : toMs(expected_harvest_at)}, ${Date.now()}
     WHERE NOT EXISTS (
       SELECT 1 FROM ${farm_crop_cycles}
@@ -86,8 +93,32 @@ cropCyclesRoutes.post("/:id/transition", async (c) => {
   if (!canTransition(from, to)) return c.json({ error: "invalid_transition", from, to }, 409);
 
   const now = Date.now();
-  // Conditional on the status we validated against: a concurrent transition makes this update 0 rows.
-  const [updated] = await db
+  const tasks = current.template_key === null ? [] : stageTasks(current.template_key, to, now);
+  const newIds = tasks.map(() => crypto.randomUUID());
+
+  // One batch (one transaction). The stage's work orders are inserted *before* the status update and only
+  // while the cycle is still in `from`; the update is conditional on `from` too. A request that lost a race
+  // therefore inserts nothing and updates nothing.
+  const inserts = tasks.map((task, i) =>
+    db.insert(work_orders).select(
+      db
+        .select({
+          id: sql<string>`${newIds[i]}`.as("id"),
+          asset_id: asset_units.asset_id,
+          unit_id: farm_crop_cycles.unit_id,
+          crop_cycle_id: farm_crop_cycles.id,
+          title: sql<string>`${task.title}`.as("title"),
+          status: sql<"open">`'open'`.as("status"),
+          due_at: sql<number>`${task.due_at_ms}`.as("due_at"),
+          created_at: sql<number>`${now}`.as("created_at"),
+          updated_at: sql<number>`${now}`.as("updated_at"),
+        })
+        .from(farm_crop_cycles)
+        .innerJoin(asset_units, eq(asset_units.id, farm_crop_cycles.unit_id))
+        .where(and(eq(farm_crop_cycles.id, id), eq(farm_crop_cycles.status, from))),
+    ),
+  );
+  const update = db
     .update(farm_crop_cycles)
     .set({
       status: to,
@@ -96,6 +127,38 @@ cropCyclesRoutes.post("/:id/transition", async (c) => {
     })
     .where(and(eq(farm_crop_cycles.id, id), eq(farm_crop_cycles.status, from)))
     .returning();
+  type CycleRow = typeof farm_crop_cycles.$inferSelect;
+  let updated: CycleRow | undefined;
+  const [firstInsert, ...moreInserts] = inserts;
+  if (firstInsert === undefined) {
+    [updated] = await update;
+  } else {
+    const results = await db.batch([firstInsert, ...moreInserts, update]);
+    [updated] = results[results.length - 1] as CycleRow[];
+  }
   if (!updated) return c.json({ error: "status_changed", from, to }, 409);
-  return c.json(cropCycleToApi(updated));
+
+  const created = newIds.length === 0 ? [] : await db.select().from(work_orders).where(inArray(work_orders.id, newIds));
+  const createdSorted = newIds.flatMap((wid) => created.filter((w) => w.id === wid));
+  return c.json({ ...cropCycleToApi(updated), created_work_orders: createdSorted.map(workOrderToApi) });
 });
+
+cropCyclesRoutes.get("/:id/work-orders", async (c) => {
+  const id = c.req.param("id");
+  const db = drizzle(c.env.DB);
+  const cycle = await db.select({ id: farm_crop_cycles.id }).from(farm_crop_cycles).where(eq(farm_crop_cycles.id, id)).get();
+  if (!cycle) return cycleNotFound(c);
+  const rows = await db
+    .select()
+    .from(work_orders)
+    .where(eq(work_orders.crop_cycle_id, id))
+    .orderBy(desc(work_orders.created_at), desc(sql`${work_orders}.rowid`));
+  return c.json({ work_orders: rows.map(workOrderToApi) });
+});
+
+/** Mounted at /api/crop-templates: the stage task templates (read-only). */
+export const cropTemplatesRoutes = new Hono<{ Bindings: Env }>();
+
+cropTemplatesRoutes.get("/", (c) =>
+  c.json({ templates: Object.entries(CROP_TEMPLATES).map(([key, template]) => ({ key, ...template })) }),
+);

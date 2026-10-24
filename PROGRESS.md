@@ -24,6 +24,6 @@
 
 ## Milestone 4: Operational Engine & Settlements (รอกติกาจากเจ้าของ)
 - [x] Task 4.1a: crop cycle state machine + API
-- [ ] Task 4.1b: แม่แบบงานตามช่วง (ทุเรียน/ข้าวโพด)
+- [x] Task 4.1b: แม่แบบงานตามช่วง (ทุเรียน/ข้าวโพด)
 - [ ] Task 4.2: Harvest log + ใบชั่งน้ำหนัก เก็บใน R2
 - [ ] Task 4.3: Settlement calculator (Revenue − OPEX = profit-share)

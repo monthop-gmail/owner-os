@@ -248,7 +248,7 @@ describe("migration 0001 on a database that already has data", () => {
       ]);
 
       const applied = await applyMigrations(db, (f) => !f.startsWith("0000_"));
-      expect(applied).toEqual(["0001_crop_cycle_link.sql"]);
+      expect(applied[0]).toBe("0001_crop_cycle_link.sql");
 
       const counts = await db
         .prepare(

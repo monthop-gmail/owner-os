@@ -7,6 +7,7 @@ export const ASSET_KINDS = ["farm", "property", "equipment", "other"] as const;
 export const ASSET_UNIT_TYPES = ["plot", "zone", "building", "other"] as const;
 export const WORK_ORDER_STATUSES = ["open", "in_progress", "submitted", "verified", "rejected"] as const;
 export const CROP_CYCLE_STATUSES = ["planned", "growing", "harvesting", "closed"] as const;
+export const CROP_TEMPLATE_KEYS = ["durian", "maize", "melon"] as const;
 
 export const assets = sqliteTable("assets", {
   id: text("id").primaryKey(),
@@ -86,6 +87,8 @@ export const farm_crop_cycles = sqliteTable(
     crop: text("crop").notNull(),
     variety: text("variety"),
     status: text("status", { enum: CROP_CYCLE_STATUSES }).notNull().default("planned"),
+    // Stage task template (migration 0002); null = no automatic work orders.
+    template_key: text("template_key", { enum: CROP_TEMPLATE_KEYS }),
     started_at: integer("started_at"),
     expected_harvest_at: integer("expected_harvest_at"),
     ended_at: integer("ended_at"),
