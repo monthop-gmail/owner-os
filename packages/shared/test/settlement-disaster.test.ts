@@ -91,6 +91,20 @@ describe("นายหัว (operator_reimbursed · target 350,000 · opex 40,0
     expect(r.assumptions.some((a) => a.includes("ต่ำกว่าเกณฑ์"))).toBe(true);
   });
 
+  it("damage 30% scales the target to 245,000: sales 300,000, no insurance → owner 245,000 · operator 15,000 (4.4b P3)", () => {
+    // net 260,000 − target 245,000 = excess 15,000 → bonus 15,000 at 100%
+    const r = fixedRun(nayhua(), 300_000, 40_000, disaster(30));
+    expect(baht(r)).toEqual({ owner: 245_000, operator: 15_000 });
+    expect(r.disaster_clause_applied).toBe(true);
+  });
+
+  it("threshold is inclusive: 20.00% applies the clause, 19.99% does not (4.4b P3)", () => {
+    const at = (damage_bps: number) =>
+      fixedRun(nayhua(), 300_000, 40_000, { damage_bps, insurance_satang: 0, government_aid_satang: 0 }).disaster_clause_applied;
+    expect(at(2000)).toBe(true);
+    expect(at(1999)).toBe(false);
+  });
+
   it("insurance_recipient owner adds the payout to the owner after the split", () => {
     // pooled would be 175,000 / 25,000; to the owner: net 140,000 < 175,000 → owner 140,000 + 60,000, operator 0
     const r = fixedRun(nayhua({ min_damage_bps: 2000, target_adjustment: "scale_by_damage", insurance_recipient: "owner" }), 180_000, 40_000, disaster(50, 60_000));

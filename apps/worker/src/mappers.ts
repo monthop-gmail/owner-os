@@ -76,6 +76,7 @@ export function workOrderToApi(row: WorkOrderRow): WorkOrder {
     asset_id: row.asset_id,
     unit_id: row.unit_id,
     crop_cycle_id: row.crop_cycle_id,
+    disaster_event_id: row.disaster_event_id,
     title: row.title,
     status: row.status,
     due_at: toIsoOrNull(row.due_at),

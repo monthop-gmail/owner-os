@@ -38,6 +38,7 @@ export const WorkOrderSchema = z.object({
   asset_id: IdSchema,
   unit_id: IdSchema.nullable(),
   crop_cycle_id: IdSchema.nullable(),
+  disaster_event_id: IdSchema.nullable(),
   title: z.string().min(1).max(200),
   status: WorkOrderStatus,
   due_at: IsoDateTimeSchema.nullable(),

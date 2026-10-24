@@ -44,6 +44,8 @@ export const work_orders = sqliteTable(
     unit_id: text("unit_id").references(() => asset_units.id),
     // Optional link to a crop cycle (migration 0001); must be a cycle of the same unit/asset (checked in the API).
     crop_cycle_id: text("crop_cycle_id").references(() => farm_crop_cycles.id),
+    // Recovery work created from a disaster event (migration 0006).
+    disaster_event_id: text("disaster_event_id").references(() => disaster_events.id),
     title: text("title").notNull(),
     status: text("status", { enum: WORK_ORDER_STATUSES }).notNull().default("open"),
     due_at: integer("due_at"),
@@ -54,6 +56,7 @@ export const work_orders = sqliteTable(
     index("work_orders_asset_id_idx").on(t.asset_id),
     index("work_orders_status_idx").on(t.status),
     index("work_orders_crop_cycle_id_idx").on(t.crop_cycle_id),
+    index("work_orders_disaster_event_id_idx").on(t.disaster_event_id),
   ],
 );
 
@@ -168,6 +171,8 @@ export const disaster_events = sqliteTable(
     ended_at: integer("ended_at"),
     description: text("description"),
     created_at: integer("created_at").notNull(),
+    // Set once when recovery work orders are generated (migration 0006); guards against doing it twice.
+    recovery_tasks_created_at: integer("recovery_tasks_created_at"),
   },
   (t) => [index("disaster_events_asset_id_idx").on(t.asset_id)],
 );

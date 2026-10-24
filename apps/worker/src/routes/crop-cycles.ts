@@ -107,6 +107,8 @@ cropCyclesRoutes.post("/:id/transition", async (c) => {
           asset_id: asset_units.asset_id,
           unit_id: farm_crop_cycles.unit_id,
           crop_cycle_id: farm_crop_cycles.id,
+          // insert…select needs every work_orders column, in table order.
+          disaster_event_id: sql<string | null>`NULL`.as("disaster_event_id"),
           title: sql<string>`${task.title}`.as("title"),
           status: sql<"open">`'open'`.as("status"),
           due_at: sql<number>`${task.due_at_ms}`.as("due_at"),

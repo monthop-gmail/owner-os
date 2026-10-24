@@ -48,6 +48,7 @@ const workOrder = {
   asset_id: "a-1",
   unit_id: null,
   crop_cycle_id: null,
+  disaster_event_id: null,
   title: "ใส่ปุ๋ย",
   status: "open",
   due_at: null,

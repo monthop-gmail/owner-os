@@ -45,6 +45,17 @@ export type CreateDisasterEventInput = z.infer<typeof CreateDisasterEventInput>;
 
 export const LinkDisasterEvidenceInput = z.strictObject({ evidence_id: IdSchema });
 
+/** Preparation tasks before an expected disaster; no unit_ids = every unit of the asset. */
+export const DisasterPrepInput = z.strictObject({
+  event_type: DisasterType,
+  unit_ids: z
+    .array(IdSchema)
+    .min(1)
+    .max(200)
+    .refine((ids) => new Set(ids).size === ids.length, "unit_ids must be unique")
+    .optional(),
+});
+
 export const DisasterEventUnitSchema = z.object({
   unit_id: IdSchema,
   unit_name: z.string(),

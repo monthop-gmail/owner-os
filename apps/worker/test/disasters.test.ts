@@ -79,7 +79,12 @@ describe("POST /api/assets/:id/disaster-events", () => {
     const row = await env.DB.prepare("SELECT damage_bps FROM disaster_event_units WHERE event_id = ?").bind(event.id).first();
     expect(row).toEqual({ damage_bps: 4000 });
 
-    expect(await json<DisasterEvent>(await send("GET", `/api/disaster-events/${event.id}`), 200)).toEqual(event);
+    const { recovery_work_orders, ...detail } = await json<DisasterEvent & { recovery_work_orders: unknown[] }>(
+      await send("GET", `/api/disaster-events/${event.id}`),
+      200,
+    );
+    expect(detail).toEqual(event);
+    expect(recovery_work_orders).toEqual([]);
     const list = await json<{ disaster_events: DisasterEvent[] }>(await send("GET", `/api/assets/${durian.id}/disaster-events`), 200);
     expect(list.disaster_events.map((e) => e.id)).toContain(event.id);
   });
@@ -179,24 +184,36 @@ describe("auth and migration", () => {
   });
 
   it("applies migration 0005 on a database with existing data", async () => {
-    const legacy = await createTestEnv({ migrations: (f) => !f.startsWith("0005_") });
+    // Rows written directly in the 0004-era schema (the current API expects the latest schema).
+    const legacy = await createTestEnv({ migrations: (f) => f < "0005_" });
     try {
-      const summary = await seedDemo((p, i) => app.request(p, i, legacy.env), { token: TEST_API_TOKEN, fixture: fixtureJson as DemoFixture });
-      expect(summary.failures).toEqual([]);
       const db = legacy.env.DB;
-      const counts = "SELECT (SELECT COUNT(*) FROM assets) a, (SELECT COUNT(*) FROM work_orders) w, (SELECT COUNT(*) FROM work_order_evidence) e, (SELECT COUNT(*) FROM asset_contracts) k";
+      const now = Date.now();
+      await db.batch([
+        db.prepare("INSERT INTO assets (id, name, kind, created_at) VALUES ('v', 'พูลวิลล่า (demo)', 'property', ?)").bind(now),
+        db
+          .prepare("INSERT INTO asset_units (id, asset_id, name, unit_type, boundary_geojson, area_m2, created_at) VALUES ('vu', 'v', 'Villa 1', 'building', '{}', 1897, ?)")
+          .bind(now),
+        db
+          .prepare("INSERT INTO work_orders (id, asset_id, unit_id, title, status, created_at, updated_at) VALUES ('w', 'v', 'vu', 'ล้างสระ', 'submitted', ?, ?)")
+          .bind(now, now),
+        db
+          .prepare(
+            "INSERT INTO asset_contracts (id, asset_id, contract_type, partner_label, terms_json, is_active, starts_at, created_at) VALUES ('k', 'v', 'property_management', 'บริษัทบริหารที่พัก (demo)', '{}', 1, ?, ?)",
+          )
+          .bind(now, now),
+      ]);
+      const counts = "SELECT (SELECT COUNT(*) FROM assets) a, (SELECT COUNT(*) FROM work_orders) w, (SELECT COUNT(*) FROM asset_contracts) k";
       const before = await db.prepare(counts).first();
-      expect(await applyMigrations(db, (f) => f.startsWith("0005_"))).toEqual(["0005_disaster_events.sql"]);
+      const applied = await applyMigrations(db, (f) => f >= "0005_");
+      expect(applied[0]).toBe("0005_disaster_events.sql");
       expect(await db.prepare(counts).first()).toEqual(before);
-      expect(before).toEqual({ a: 4, w: 5, e: 3, k: 4 });
+      expect(before).toEqual({ a: 1, w: 1, k: 1 });
 
-      const { assets } = await json<{ assets: Asset[] }>(await send("GET", "/api/assets", undefined, "application/json", legacy.env), 200);
-      const villa = assets.find((x) => x.kind === "property")!;
-      const { units } = await json<{ units: AssetUnit[] }>(await send("GET", `/api/assets/${villa.id}`, undefined, "application/json", legacy.env), 200);
-      const res = await send("POST", `/api/assets/${villa.id}/disaster-events`, { ...flood(units[0]!.id, 15), event_type: "storm" }, "application/json", legacy.env);
+      const res = await send("POST", "/api/assets/v/disaster-events", { ...flood("vu", 15), event_type: "storm" }, "application/json", legacy.env);
       expect(res.status).toBe(201);
     } finally {
       await legacy.dispose();
     }
-  }, 30_000);
+  });
 });
