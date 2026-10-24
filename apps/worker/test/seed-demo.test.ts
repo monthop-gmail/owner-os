@@ -80,7 +80,7 @@ describe("seedDemo through the API on local D1/R2", () => {
     ).all<{ name: string; contract_type: string; partner_label: string; terms_json: string }>();
     const byType = Object.fromEntries(rows.results.map((r) => [r.contract_type, { ...r, terms: JSON.parse(r.terms_json) }]));
     expect(Object.keys(byType).sort()).toEqual(["fixed_target_bonus", "pay_per_job", "property_management", "turnkey_profit_share"]);
-    expect(byType.fixed_target_bonus!.terms).toMatchObject({ owner_target_revenue_satang: 35_000_000, excess_operator_bps: 10_000, opex_borne_by: "operator" });
+    expect(byType.fixed_target_bonus!.terms).toMatchObject({ owner_target_revenue_satang: 35_000_000, excess_operator_bps: 10_000, opex_borne_by: "operator_reimbursed" });
     expect(byType.pay_per_job!.terms.rates.map((r: { job_key: string; rate_satang: number }) => [r.job_key, r.rate_satang])).toEqual([
       ["drone_spray", 12_000],
       ["harvester", 45_000],

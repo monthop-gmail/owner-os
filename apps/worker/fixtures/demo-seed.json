@@ -11,7 +11,7 @@
           "contract_type": "fixed_target_bonus",
           "owner_target_revenue_thb": 350000,
           "excess_operator_pct": 100,
-          "opex_borne_by": "operator",
+          "opex_borne_by": "operator_reimbursed",
           "shortfall_policy": "owner_absorbs"
         }
       },

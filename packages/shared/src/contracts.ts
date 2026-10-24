@@ -69,7 +69,9 @@ export const FixedTargetBonusTerms = z.strictObject({
   contract_type: z.literal("fixed_target_bonus"),
   owner_target_revenue_thb: Thb.refine((v) => v > 0, "owner_target_revenue_thb must be > 0"),
   excess_operator_pct: Pct.default(100),
-  opex_borne_by: z.enum(["operator", "owner"]).default("operator"),
+  // operator_reimbursed (default): the operator gets opex back from revenue before the target comparison,
+  // so the operator never ends below zero (unless shortfall_policy is operator_covers).
+  opex_borne_by: z.enum(["operator_reimbursed", "operator", "owner"]).default("operator_reimbursed"),
   shortfall_policy: z.enum(["owner_absorbs", "operator_covers"]).default("owner_absorbs"),
 });
 

@@ -26,12 +26,21 @@ describe("ContractTermsSchema", () => {
     expect(ContractTermsSchema.parse(fixed)).toEqual({
       ...fixed,
       excess_operator_pct: 100,
-      opex_borne_by: "operator",
+      opex_borne_by: "operator_reimbursed",
       shortfall_policy: "owner_absorbs",
     });
     expect(ContractTermsSchema.parse({ ...turnkey, management_retainer_monthly_thb: undefined })).toMatchObject({
       management_retainer_monthly_thb: 0,
     });
+  });
+
+  it("defaults opex_borne_by to operator_reimbursed and keeps explicit operator / owner", () => {
+    expect(ContractTermsSchema.parse(fixed)).toMatchObject({ opex_borne_by: "operator_reimbursed" });
+    expect(ContractTermsSchema.parse({ ...fixed, opex_borne_by: "operator" })).toMatchObject({ opex_borne_by: "operator" });
+    expect(ContractTermsSchema.parse({ ...fixed, opex_borne_by: "owner" })).toMatchObject({ opex_borne_by: "owner" });
+    expect(ok({ ...fixed, opex_borne_by: "nobody" })).toBe(false);
+    const created = CreateContractInput.parse({ partner_label: "ผู้ดูแลสวน (demo)", starts_at: "2026-10-01T00:00:00.000Z", terms: fixed });
+    expect(created.terms).toMatchObject({ opex_borne_by: "operator_reimbursed" });
   });
 
   it("requires owner + operator shares to total exactly 100", () => {

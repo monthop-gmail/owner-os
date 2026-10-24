@@ -28,7 +28,7 @@ export type SatangContractTerms =
       contract_type: "fixed_target_bonus";
       owner_target_revenue_satang: number;
       excess_operator_bps: number;
-      opex_borne_by: "operator" | "owner";
+      opex_borne_by: "operator_reimbursed" | "operator" | "owner";
       shortfall_policy: "owner_absorbs" | "operator_covers";
     };
 
@@ -138,7 +138,62 @@ function turnkey(t: Extract<SatangContractTerms, { contract_type: "turnkey_profi
   return finish(t.contract_type, lines, assumptions);
 }
 
-function fixedTarget(t: Extract<SatangContractTerms, { contract_type: "fixed_target_bonus" }>, revenue: number, opex: number) {
+type FixedTargetTerms = Extract<SatangContractTerms, { contract_type: "fixed_target_bonus" }>;
+
+/** Shortfall handling shared by both fixed-target variants; `compared` is what was measured against the target. */
+function applyShortfall(t: FixedTargetTerms, compared: number, lines: SettlementLine[], assumptions: string[], what: string) {
+  const target = t.owner_target_revenue_satang;
+  if (compared >= target) return;
+  if (t.shortfall_policy === "operator_covers") {
+    const shortfall = target - compared;
+    lines.push(
+      { key: "shortfall_cover", label_th: `ชดเชย${what}ไม่ถึงเป้า (ผู้ดูแลจ่าย)`, amount_satang: -shortfall, party: "operator" },
+      { key: "shortfall_to_owner", label_th: "รับชดเชยให้ถึงเป้า", amount_satang: shortfall, party: "owner" },
+    );
+    assumptions.push(`${what}ไม่ถึงเป้า: ผู้ดูแลชดเชยส่วนที่ขาดให้เจ้าของ (operator_covers)`);
+  } else {
+    assumptions.push(`${what}ไม่ถึงเป้า: เจ้าของรับตามจริง ไม่มีโบนัส (owner_absorbs)`);
+  }
+}
+
+/**
+ * operator_reimbursed: opex is paid back to the operator from revenue first, and only the rest
+ * (net = revenue − opex) is compared with the owner's target. The operator's result is the bonus (≥ 0).
+ */
+function fixedTargetReimbursed(t: FixedTargetTerms, revenue: number, opex: number) {
+  const target = t.owner_target_revenue_satang;
+  const net = revenue - opex;
+  const excess = Math.max(0, net - target);
+  const bonus = applyBps(excess, t.excess_operator_bps);
+  const lines: SettlementLine[] = [
+    { key: "opex", label_th: "ค่าใช้จ่ายดำเนินงาน", amount_satang: opex, party: "cost" },
+    { key: "opex_reimbursement", label_th: "คืนค่าใช้จ่ายให้ผู้ดูแลจากยอดขาย", amount_satang: opex, party: "operator" },
+    { key: "opex_paid_by_operator", label_th: "ค่าใช้จ่ายที่ผู้ดูแลออกไปก่อน", amount_satang: -opex, party: "operator" },
+    {
+      key: "owner_net",
+      label_th: net < target ? "ยอดหลังคืนค่าใช้จ่าย (ไม่ถึงเป้า · เป็นของเจ้าของ)" : "รายได้ถึงเป้าของเจ้าของ",
+      amount_satang: Math.min(net, target),
+      party: "owner",
+    },
+  ];
+  if (excess - bonus !== 0) {
+    lines.push({ key: "excess_to_owner", label_th: "ส่วนเกินเป้าที่เป็นของเจ้าของ", amount_satang: excess - bonus, party: "owner" });
+  }
+  lines.push({ key: "operator_bonus", label_th: "โบนัสส่วนเกินเป้า (ผู้ดูแล)", amount_satang: bonus, party: "operator" });
+  const assumptions = [
+    ROUNDING,
+    "คืนค่าใช้จ่ายให้ผู้ดูแลจากยอดขายก่อน แล้วจึงเทียบยอดที่เหลือกับเป้า (operator_reimbursed) — ผู้ดูแลได้โบนัสส่วนเกินเป้าเท่านั้นและไม่ติดลบ",
+  ];
+  if (net < 0) assumptions.push("ยอดขายไม่พอคืนค่าใช้จ่าย: เจ้าของรับส่วนที่ขาด (ยอดเจ้าของติดลบ)");
+  if (t.shortfall_policy === "operator_covers") {
+    assumptions.push("เลือก operator_covers ร่วมกับ operator_reimbursed: ตัวเลือกนี้ทำให้ผู้ดูแลติดลบได้เมื่อไม่ถึงเป้า");
+  }
+  applyShortfall(t, net, lines, assumptions, "ยอดหลังคืนค่าใช้จ่าย");
+  return finish(t.contract_type, lines, assumptions);
+}
+
+function fixedTarget(t: FixedTargetTerms, revenue: number, opex: number) {
+  if (t.opex_borne_by === "operator_reimbursed") return fixedTargetReimbursed(t, revenue, opex);
   const target = t.owner_target_revenue_satang;
   const excess = Math.max(0, revenue - target);
   const bonus = applyBps(excess, t.excess_operator_bps);
@@ -158,19 +213,7 @@ function fixedTarget(t: Extract<SatangContractTerms, { contract_type: "fixed_tar
     party: t.opex_borne_by,
   });
   assumptions.push(t.opex_borne_by === "operator" ? "ผู้ดูแลรับค่าใช้จ่ายเอง ยอดผู้ดูแลติดลบได้" : "เจ้าของรับค่าใช้จ่าย");
-
-  if (revenue < target) {
-    const shortfall = target - revenue;
-    if (t.shortfall_policy === "operator_covers") {
-      lines.push(
-        { key: "shortfall_cover", label_th: "ชดเชยรายได้ไม่ถึงเป้า (ผู้ดูแลจ่าย)", amount_satang: -shortfall, party: "operator" },
-        { key: "shortfall_to_owner", label_th: "รับชดเชยให้ถึงเป้า", amount_satang: shortfall, party: "owner" },
-      );
-      assumptions.push("รายได้ไม่ถึงเป้า: ผู้ดูแลชดเชยส่วนที่ขาดให้เจ้าของ (operator_covers)");
-    } else {
-      assumptions.push("รายได้ไม่ถึงเป้า: เจ้าของรับรายได้ตามจริง ไม่มีโบนัส (owner_absorbs)");
-    }
-  }
+  applyShortfall(t, revenue, lines, assumptions, "รายได้");
   return finish(t.contract_type, lines, assumptions);
 }
 

@@ -104,6 +104,42 @@ describe("fixed_target_bonus — นายหัว (target 350,000 · excess 10
   });
 });
 
+describe("fixed_target_bonus — operator_reimbursed (opex paid back before the target)", () => {
+  const reimbursed = (over: Partial<Fixed> = {}) => nayhua({ opex_borne_by: "operator_reimbursed", ...over });
+
+  it.each([
+    // [revenue, owner, operator] — target 350,000 · opex 40,000 · excess 100%
+    [420_000, 350_000, 30_000],
+    [370_000, 330_000, 0],
+    [300_000, 260_000, 0],
+    [30_000, -10_000, 0],
+  ])("revenue %i → owner %i · operator %i", (revenue, owner, operator) => {
+    expect(baht(fixedRun(reimbursed(), revenue, 40_000))).toEqual({ owner, operator });
+  });
+
+  it("revenue 420,000 with excess 50% → owner 365,000 · operator 15,000", () => {
+    expect(baht(fixedRun(reimbursed({ excess_operator_bps: 5000 }), 420_000, 40_000))).toEqual({ owner: 365_000, operator: 15_000 });
+  });
+
+  it("shows the reimbursement lines and explains the rule", () => {
+    const r = fixedRun(reimbursed(), 420_000, 40_000);
+    const line = (key: string) => r.lines.find((l) => l.key === key);
+    expect(line("opex_reimbursement")).toMatchObject({ amount_satang: 40_000 * THB, party: "operator" });
+    expect(line("opex_paid_by_operator")).toMatchObject({ amount_satang: -40_000 * THB, party: "operator" });
+    expect(line("operator_bonus")).toMatchObject({ amount_satang: 30_000 * THB, party: "operator" });
+    expect(lineSum(r)).toBe(420_000 * THB);
+    expect(r.assumptions.some((a) => a.includes("operator_reimbursed"))).toBe(true);
+    expect(fixedRun(reimbursed(), 30_000, 40_000).assumptions.some((a) => a.includes("ติดลบ"))).toBe(true);
+  });
+
+  it("operator_covers still applies on top of reimbursement, and warns that the operator can go negative", () => {
+    // net 260,000 → shortfall 90,000 paid by the operator
+    const r = fixedRun(reimbursed({ shortfall_policy: "operator_covers" }), 300_000, 40_000);
+    expect(baht(r)).toEqual({ owner: 350_000, operator: -90_000 });
+    expect(r.assumptions.some((a) => a.includes("ผู้ดูแลติดลบได้"))).toBe(true);
+  });
+});
+
 describe("pay_per_job — the team's machinery rates", () => {
   it("drone 120 THB/rai × 20 rai = 2,400 and harvester 450 × 20 = 9,000", () => {
     const r = computeSettlement(machinery, {
@@ -152,6 +188,29 @@ describe("property_management — villa (15% + 800 per turnover)", () => {
     const r = computeSettlement(villa, { contract_type: "property_management", revenue_satang: 1000 * THB, turnovers: 3 });
     expect(baht(r)).toEqual({ owner: -1550, operator: 2550 });
     expect(r.assumptions.some((a) => a.includes("ติดลบ"))).toBe(true);
+  });
+});
+
+describe("remainder rule (4.3b review P3)", () => {
+  // Would fail if the operator's share were rounded from its own percentage instead of taken as the remainder.
+  it("turnkey 70/30 on a 5-satang pool → owner 4 · operator 1 · total 5", () => {
+    const r = computeSettlement(melon(), { contract_type: "turnkey_profit_share", revenue_satang: 5, opex_satang: 0, period_months: 0 });
+    expect([r.owner_payout_satang, r.operator_payout_satang]).toEqual([4, 1]);
+    expect(r.owner_payout_satang + r.operator_payout_satang).toBe(5);
+    // Independent rounding would give round(3.5) + round(1.5) = 4 + 2 = 6.
+    expect(applyBps(5, 7000) + applyBps(5, 3000)).toBe(6);
+  });
+
+  it("turnkey 50/50 on a 1-satang pool → total 1", () => {
+    const r = computeSettlement(melon({ owner_share_bps: 5000, operator_share_bps: 5000 }), {
+      contract_type: "turnkey_profit_share",
+      revenue_satang: 1,
+      opex_satang: 0,
+      period_months: 0,
+    });
+    expect(r.owner_payout_satang + r.operator_payout_satang).toBe(1);
+    expect([r.owner_payout_satang, r.operator_payout_satang]).toEqual([1, 0]);
+    expect(applyBps(1, 5000) * 2).toBe(2);
   });
 });
 
@@ -222,17 +281,36 @@ describe("invariants (randomized, fixed seed)", () => {
       const t = nayhua({
         owner_target_revenue_satang: 1 + int(5_000_000_000),
         excess_operator_bps: int(10_000),
-        opex_borne_by: pick(["operator", "owner"] as const),
+        opex_borne_by: pick(["operator_reimbursed", "operator", "owner"] as const),
         shortfall_policy: pick(["owner_absorbs", "operator_covers"] as const),
       });
       const revenue = int(8_000_000_000);
       const opex = int(2_000_000_000);
       const r = computeSettlement(t, { contract_type: "fixed_target_bonus", revenue_satang: revenue, opex_satang: opex });
       expect(r.owner_payout_satang + r.operator_payout_satang).toBe(revenue - opex);
-      if (t.shortfall_policy === "operator_covers" && revenue < t.owner_target_revenue_satang) {
+      if (t.shortfall_policy === "operator_covers" && t.opex_borne_by !== "operator_reimbursed" && revenue < t.owner_target_revenue_satang) {
         const ownerOpex = t.opex_borne_by === "owner" ? opex : 0;
         expect(r.owner_payout_satang).toBe(t.owner_target_revenue_satang - ownerOpex);
       }
+      expectWellFormed(r, revenue);
+    }
+  });
+
+  it(`fixed_target_bonus operator_reimbursed + owner_absorbs: operator ≥ 0 and owner + operator = revenue − opex in ${CASES} cases`, () => {
+    for (let i = 0; i < CASES; i++) {
+      const t = nayhua({
+        owner_target_revenue_satang: 1 + int(5_000_000_000),
+        excess_operator_bps: int(10_000),
+        opex_borne_by: "operator_reimbursed",
+        shortfall_policy: "owner_absorbs",
+      });
+      const revenue = int(8_000_000_000);
+      const opex = int(3_000_000_000);
+      const r = computeSettlement(t, { contract_type: "fixed_target_bonus", revenue_satang: revenue, opex_satang: opex });
+      expect(r.operator_payout_satang).toBeGreaterThanOrEqual(0);
+      expect(r.owner_payout_satang + r.operator_payout_satang).toBe(revenue - opex);
+      const excess = Math.max(0, revenue - opex - t.owner_target_revenue_satang);
+      expect(r.operator_payout_satang).toBe(applyBps(excess, t.excess_operator_bps));
       expectWellFormed(r, revenue);
     }
   });
