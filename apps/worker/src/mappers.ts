@@ -6,11 +6,13 @@ import {
   pctToBps,
   satangToThb,
   thbToSatang,
+  weightedDamageBps,
   type Asset,
   type AssetUnit,
   type Contract,
   type ContractTerms,
   type CropCycle,
+  type DisasterEvent,
   type Evidence,
   type HarvestLog,
   type Polygon,
@@ -18,6 +20,8 @@ import {
   type WorkOrder,
 } from "@owner-os/shared";
 import type {
+  disaster_event_units,
+  disaster_events,
   asset_contracts,
   asset_units,
   assets,
@@ -204,5 +208,36 @@ export function contractToApi(row: ContractRow): Contract {
     starts_at: toIso(row.starts_at),
     ends_at: toIsoOrNull(row.ends_at),
     created_at: toIso(row.created_at),
+  };
+}
+
+export type DisasterEventRow = typeof disaster_events.$inferSelect;
+/** An affected unit joined with its name and area. */
+export type DisasterEventUnitJoined = typeof disaster_event_units.$inferSelect & {
+  unit_name: string;
+  area_m2: number | null;
+};
+
+export function disasterEventToApi(row: DisasterEventRow, units: DisasterEventUnitJoined[], evidence: EvidenceRow[]): DisasterEvent {
+  return {
+    id: row.id,
+    asset_id: row.asset_id,
+    event_type: row.event_type,
+    occurred_at: toIso(row.occurred_at),
+    ended_at: toIsoOrNull(row.ended_at),
+    description: row.description,
+    created_at: toIso(row.created_at),
+    units: units.map((u) => ({
+      unit_id: u.unit_id,
+      unit_name: u.unit_name,
+      area_m2: u.area_m2,
+      damage_pct: bpsToPct(u.damage_bps),
+      // m², 2 decimals
+      damaged_area_m2: u.area_m2 === null ? null : Math.round((u.area_m2 * u.damage_bps) / 100) / 100,
+      note: u.note,
+    })),
+    weighted_damage_pct: bpsToPct(weightedDamageBps(units)),
+    // Linked evidence always has an upload and coordinates (checked when linking).
+    evidence: evidence.map(evidenceToApi) as DisasterEvent["evidence"],
   };
 }

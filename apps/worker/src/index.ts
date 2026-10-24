@@ -4,6 +4,7 @@ import type { Env } from "./env";
 import { assetsRoutes } from "./routes/assets";
 import { assetContractsRoutes, contractsRoutes } from "./routes/contracts";
 import { cropCyclesRoutes, cropTemplatesRoutes, unitCropCyclesRoutes } from "./routes/crop-cycles";
+import { assetDisasterRoutes, cycleDisasterRoutes, disasterEventsRoutes } from "./routes/disasters";
 import { evidenceRoutes } from "./routes/evidence";
 import { cycleHarvestLogsRoutes, harvestLogsRoutes } from "./routes/harvest-logs";
 import { tasksRoutes } from "./routes/tasks";
@@ -33,5 +34,8 @@ app.route("/api/crop-cycles", cycleHarvestLogsRoutes);
 app.route("/api/harvest-logs", harvestLogsRoutes);
 app.route("/api/assets", assetContractsRoutes);
 app.route("/api/contracts", contractsRoutes);
+app.route("/api/assets", assetDisasterRoutes);
+app.route("/api/disaster-events", disasterEventsRoutes);
+app.route("/api/crop-cycles", cycleDisasterRoutes);
 
 export default app;

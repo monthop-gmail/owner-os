@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { check, index, integer, real, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+import { check, index, integer, primaryKey, real, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 // Enum values mirror @owner-os/shared (checked in test/schema.test.ts); not imported to keep the schema standalone.
 // Timestamps are integer epoch milliseconds; GeoJSON is stored as text.
@@ -152,6 +152,58 @@ export const asset_contracts = sqliteTable(
   ],
 );
 
+export const DISASTER_TYPES = ["flood", "drought", "storm", "pest_disease", "fire", "other"] as const;
+
+// Disaster / accident events (migration 0005): affected units with damage in basis points, and linked
+// field evidence (photos with GPS that passed the geofence) for claims.
+export const disaster_events = sqliteTable(
+  "disaster_events",
+  {
+    id: text("id").primaryKey(),
+    asset_id: text("asset_id")
+      .notNull()
+      .references(() => assets.id),
+    event_type: text("event_type", { enum: DISASTER_TYPES }).notNull(),
+    occurred_at: integer("occurred_at").notNull(),
+    ended_at: integer("ended_at"),
+    description: text("description"),
+    created_at: integer("created_at").notNull(),
+  },
+  (t) => [index("disaster_events_asset_id_idx").on(t.asset_id)],
+);
+
+export const disaster_event_units = sqliteTable(
+  "disaster_event_units",
+  {
+    event_id: text("event_id")
+      .notNull()
+      .references(() => disaster_events.id),
+    unit_id: text("unit_id")
+      .notNull()
+      .references(() => asset_units.id),
+    damage_bps: integer("damage_bps").notNull(),
+    note: text("note"),
+  },
+  (t) => [
+    primaryKey({ columns: [t.event_id, t.unit_id] }),
+    index("disaster_event_units_unit_id_idx").on(t.unit_id),
+    check("disaster_event_units_damage_bps_range", sql`${t.damage_bps} >= 0 AND ${t.damage_bps} <= 10000`),
+  ],
+);
+
+export const disaster_event_evidence = sqliteTable(
+  "disaster_event_evidence",
+  {
+    event_id: text("event_id")
+      .notNull()
+      .references(() => disaster_events.id),
+    evidence_id: text("evidence_id")
+      .notNull()
+      .references(() => work_order_evidence.id),
+  },
+  (t) => [primaryKey({ columns: [t.event_id, t.evidence_id] })],
+);
+
 export type Asset = typeof assets.$inferSelect;
 export type NewAsset = typeof assets.$inferInsert;
 export type AssetUnit = typeof asset_units.$inferSelect;
@@ -166,3 +218,5 @@ export type FarmHarvestLog = typeof farm_harvest_logs.$inferSelect;
 export type NewFarmHarvestLog = typeof farm_harvest_logs.$inferInsert;
 export type AssetContract = typeof asset_contracts.$inferSelect;
 export type NewAssetContract = typeof asset_contracts.$inferInsert;
+export type DisasterEventRow = typeof disaster_events.$inferSelect;
+export type DisasterEventUnitRow = typeof disaster_event_units.$inferSelect;
