@@ -37,8 +37,8 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(method: "GET" | "POST", path: string, token: string | null, body?: unknown): Promise<T> {
-  const headers: Record<string, string> = { accept: "application/json" };
+async function send(method: "GET" | "POST", path: string, token: string | null, accept: string, body?: unknown) {
+  const headers: Record<string, string> = { accept };
   if (token) headers.authorization = `Bearer ${token}`;
   const init: RequestInit = { method, headers };
   if (body !== undefined) {
@@ -60,6 +60,11 @@ async function request<T>(method: "GET" | "POST", path: string, token: string | 
     }
     throw new ApiError(res.status, code);
   }
+  return res;
+}
+
+async function request<T>(method: "GET" | "POST", path: string, token: string | null, body?: unknown): Promise<T> {
+  const res = await send(method, path, token, "application/json", body);
   return (await res.json()) as T;
 }
 
@@ -74,4 +79,10 @@ export function apiGet<T>(path: string, token: string | null = getToken()): Prom
 /** POST a JSON body with the stored bearer token; same 401 handling as apiGet. */
 export function apiPost<T>(path: string, body: unknown, token: string | null = getToken()): Promise<T> {
   return request<T>("POST", path, token, body);
+}
+
+/** GET binary data (e.g. an evidence image) with the stored bearer token; same 401 handling as apiGet. */
+export async function apiBlob(path: string, token: string | null = getToken()): Promise<Blob> {
+  const res = await send("GET", path, token, "*/*");
+  return res.blob();
 }

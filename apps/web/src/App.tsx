@@ -18,12 +18,12 @@ export const KIND_LABEL: Record<AssetKind, string> = {
   other: "อื่น ๆ",
 };
 
-const STATUS_BADGES: { status: WorkOrderStatus; label: string; className: string }[] = [
+export const STATUS_BADGES: { status: WorkOrderStatus; label: string; className: string }[] = [
   { status: "open", label: "เปิดอยู่", className: "bg-sky-100 text-sky-800" },
   { status: "in_progress", label: "กำลังทำ", className: "bg-amber-100 text-amber-800" },
   { status: "submitted", label: "ส่งแล้ว", className: "bg-violet-100 text-violet-800" },
-  { status: "verified", label: "ตรวจแล้ว", className: "bg-emerald-100 text-emerald-800" },
-  { status: "rejected", label: "ตีกลับ", className: "bg-rose-100 text-rose-800" },
+  { status: "verified", label: "ยืนยันแล้ว", className: "bg-emerald-100 text-emerald-800" },
+  { status: "rejected", label: "ไม่ผ่าน", className: "bg-rose-100 text-rose-800" },
 ];
 
 function errorMessage(err: unknown): string {

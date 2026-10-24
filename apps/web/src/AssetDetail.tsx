@@ -7,7 +7,10 @@ import markerShadow from "leaflet/dist/images/marker-shadow.png";
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { ApiError, apiGet, apiPost } from "./api";
 import { KIND_LABEL } from "./App";
+import { EvidencePanel, type Selection } from "./EvidencePanel";
+import { pinStyle, type PinEvidence } from "./evidence";
 import { areaM2, canClose, formatArea, polygonToLatLngs, toPolygon, type LatLngPoint } from "./geo";
+import { WorkOrders } from "./WorkOrders";
 
 // Default marker icons from the bundle instead of Leaflet's CSS-relative lookup.
 L.Icon.Default.mergeOptions({ iconRetinaUrl: markerIcon2x, iconUrl: markerIcon, shadowUrl: markerShadow });
@@ -43,15 +46,33 @@ export function AssetDetail({ assetId, onBack }: { assetId: string; onBack: () =
   const [loadError, setLoadError] = useState<string | null>(null);
   const [points, setPoints] = useState<LatLngPoint[]>([]);
   const [closed, setClosed] = useState(false);
+  const [pins, setPins] = useState<PinEvidence[]>([]);
+  const [pinsError, setPinsError] = useState<string | null>(null);
+  const [selection, setSelection] = useState<Selection | null>(null);
+  const [refreshKey, setRefreshKey] = useState(0);
 
   const load = useCallback(async () => {
     setLoadError(null);
-    try {
-      setDetail(await apiGet<DetailResponse>(`/api/assets/${encodeURIComponent(assetId)}`));
-    } catch (err) {
-      if (!(err instanceof ApiError && err.status === 401)) setLoadError(describeError(err, "load"));
-    }
+    setPinsError(null);
+    const id = encodeURIComponent(assetId);
+    const [detailResult, pinsResult] = await Promise.allSettled([
+      apiGet<DetailResponse>(`/api/assets/${id}`),
+      apiGet<{ evidence: PinEvidence[] }>(`/api/evidence?asset_id=${id}`),
+    ]);
+    const isAuthError = (r: PromiseRejectedResult) => r.reason instanceof ApiError && r.reason.status === 401;
+    if (detailResult.status === "fulfilled") setDetail(detailResult.value);
+    else if (!isAuthError(detailResult)) setLoadError(describeError(detailResult.reason, "load"));
+    if (pinsResult.status === "fulfilled") setPins(pinsResult.value.evidence);
+    else if (!isAuthError(pinsResult)) setPinsError("โหลดหมุดหลักฐานไม่สำเร็จ");
   }, [assetId]);
+
+  const refresh = () => {
+    void load();
+    setRefreshKey((k) => k + 1);
+  };
+
+  const selectionKey =
+    selection === null ? null : selection.kind === "evidence" ? `e:${selection.evidence.id}` : `w:${selection.workOrderId}`;
 
   useEffect(() => {
     void load();
@@ -61,9 +82,14 @@ export function AssetDetail({ assetId, onBack }: { assetId: string; onBack: () =
 
   return (
     <section className="space-y-3">
-      <button type="button" onClick={onBack} className="rounded-lg border border-slate-300 px-3 py-2">
-        ← กลับไปรายการ
-      </button>
+      <div className="flex justify-between gap-2">
+        <button type="button" onClick={onBack} className="rounded-lg border border-slate-300 px-3 py-2">
+          ← กลับไปรายการ
+        </button>
+        <button type="button" onClick={refresh} className="rounded-lg border border-slate-300 px-3 py-2">
+          รีเฟรช
+        </button>
+      </div>
 
       {loadError && (
         <p role="alert" className="font-semibold text-rose-700">
@@ -83,10 +109,17 @@ export function AssetDetail({ assetId, onBack }: { assetId: string; onBack: () =
             units={detail.units}
             points={points}
             closed={closed}
+            pins={pins}
             onAddPoint={(p) => {
               if (!closed) setPoints((prev) => [...prev, p]);
             }}
+            onPinClick={(pin) => setSelection({ kind: "evidence", evidence: pin, title: pin.work_order_title })}
           />
+          <PinLegend count={pins.length} error={pinsError} />
+
+          {selection && selectionKey && (
+            <EvidencePanel key={selectionKey} selection={selection} onClose={() => setSelection(null)} />
+          )}
 
           <div className="rounded-xl bg-white p-3 shadow-sm">
             <p className="text-sm text-slate-600">
@@ -137,6 +170,14 @@ export function AssetDetail({ assetId, onBack }: { assetId: string; onBack: () =
               />
             )}
           </div>
+
+          <WorkOrders
+            assetId={assetId}
+            units={detail.units}
+            refreshKey={refreshKey}
+            selectedId={selection?.kind === "work_order" ? selection.workOrderId : null}
+            onSelect={(wo) => setSelection({ kind: "work_order", workOrderId: wo.id, title: wo.title })}
+          />
 
           <UnitList units={detail.units} />
         </>
@@ -215,6 +256,30 @@ function SaveUnitForm(props: { assetId: string; points: LatLngPoint[]; onSaved: 
   );
 }
 
+function PinLegend({ count, error }: { count: number; error: string | null }) {
+  if (error) return <p className="text-sm font-semibold text-rose-700">{error}</p>;
+  return (
+    <p className="flex flex-wrap items-center gap-3 text-sm text-slate-600">
+      <span>หลักฐาน {count} จุด</span>
+      <span className="flex items-center gap-1">
+        <span className="inline-block h-3 w-3 rounded-full" style={{ background: pinStyle({ inside_geofence: true, distance_outside_m: 0 }).color }} />
+        ในแปลง
+      </span>
+      <span className="flex items-center gap-1">
+        <span className="inline-block h-3 w-3 rounded-full" style={{ background: pinStyle({ inside_geofence: false, distance_outside_m: 1 }).color }} />
+        ผ่านด้วยระยะเผื่อ
+      </span>
+    </p>
+  );
+}
+
+/** Leaflet tooltip content as a text node, so user-entered names are never parsed as HTML. */
+function textElement(text: string): HTMLElement {
+  const el = document.createElement("span");
+  el.textContent = text;
+  return el;
+}
+
 function UnitList({ units }: { units: AssetUnit[] }) {
   if (units.length === 0) return <p className="text-slate-500">ยังไม่มีแปลง</p>;
   return (
@@ -229,22 +294,27 @@ function UnitList({ units }: { units: AssetUnit[] }) {
   );
 }
 
-/** Leaflet map: existing units (fit to bounds) plus the in-progress draft drawn from `points`. */
+/** Leaflet map: existing units and evidence pins (fit to bounds) plus the in-progress draft from `points`. */
 function PlotMap(props: {
   units: AssetUnit[];
   points: LatLngPoint[];
   closed: boolean;
+  pins: PinEvidence[];
   onAddPoint: (p: LatLngPoint) => void;
+  onPinClick: (pin: PinEvidence) => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
   const unitsLayerRef = useRef<L.LayerGroup | null>(null);
   const draftLayerRef = useRef<L.LayerGroup | null>(null);
+  const pinsLayerRef = useRef<L.LayerGroup | null>(null);
   const onAddPointRef = useRef(props.onAddPoint);
+  const onPinClickRef = useRef(props.onPinClick);
 
   useEffect(() => {
     onAddPointRef.current = props.onAddPoint;
-  }, [props.onAddPoint]);
+    onPinClickRef.current = props.onPinClick;
+  }, [props.onAddPoint, props.onPinClick]);
 
   // Create the map once.
   useEffect(() => {
@@ -254,6 +324,7 @@ function PlotMap(props: {
     map.attributionControl.setPrefix("Leaflet");
     L.tileLayer(OSM_TILES, { maxZoom: 19, attribution: OSM_ATTRIBUTION }).addTo(map);
     unitsLayerRef.current = L.layerGroup().addTo(map);
+    pinsLayerRef.current = L.layerGroup().addTo(map);
     draftLayerRef.current = L.layerGroup().addTo(map);
     map.on("click", (e: L.LeafletMouseEvent) => onAddPointRef.current({ lat: e.latlng.lat, lng: e.latlng.lng }));
     mapRef.current = map;
@@ -263,21 +334,37 @@ function PlotMap(props: {
     };
   }, []);
 
-  // Existing units + fit bounds.
+  // Existing units + evidence pins, then fit bounds to both.
   useEffect(() => {
     const map = mapRef.current;
-    const layer = unitsLayerRef.current;
-    if (!map || !layer) return;
-    layer.clearLayers();
+    const unitsLayer = unitsLayerRef.current;
+    const pinsLayer = pinsLayerRef.current;
+    if (!map || !unitsLayer || !pinsLayer) return;
+    unitsLayer.clearLayers();
+    pinsLayer.clearLayers();
     const bounds = L.latLngBounds([]);
     for (const unit of props.units) {
       const latLngs = polygonToLatLngs(unit.boundary);
       const label = `${unit.name}${unit.area_m2 === null ? "" : ` · ${formatArea(unit.area_m2)}`}`;
-      L.polygon(latLngs, UNIT_STYLE).bindTooltip(label, { sticky: true }).addTo(layer);
+      L.polygon(latLngs, UNIT_STYLE).bindTooltip(textElement(label), { sticky: true }).addTo(unitsLayer);
       latLngs.forEach((ll) => bounds.extend(ll));
     }
+    for (const pin of props.pins) {
+      const at: L.LatLngTuple = [pin.lat, pin.lng];
+      const { color } = pinStyle(pin);
+      if (pin.accuracy_m !== null && pin.accuracy_m > 0) {
+        L.circle(at, { radius: pin.accuracy_m, color, weight: 1, opacity: 0.4, fillOpacity: 0.08, interactive: false }).addTo(
+          pinsLayer,
+        );
+      }
+      L.circleMarker(at, { radius: 8, color: "#fff", weight: 2, fillColor: color, fillOpacity: 1, bubblingMouseEvents: false })
+        .bindTooltip(textElement(pin.work_order_title))
+        .on("click", () => onPinClickRef.current(pin))
+        .addTo(pinsLayer);
+      bounds.extend(at);
+    }
     if (bounds.isValid()) map.fitBounds(bounds, { padding: [24, 24], maxZoom: 18 });
-  }, [props.units]);
+  }, [props.units, props.pins]);
 
   // Draft: vertices, open line while drawing, filled polygon once closed.
   useEffect(() => {
