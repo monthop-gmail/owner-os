@@ -7,7 +7,7 @@ const encoder = new TextEncoder();
  * Constant-time comparison that does not leak length: both values are hashed to 32 bytes with SHA-256
  * and every byte is compared with an accumulated XOR.
  */
-async function tokensEqual(a: string, b: string): Promise<boolean> {
+export async function tokensEqual(a: string, b: string): Promise<boolean> {
   const [ha, hb] = await Promise.all([
     crypto.subtle.digest("SHA-256", encoder.encode(a)),
     crypto.subtle.digest("SHA-256", encoder.encode(b)),

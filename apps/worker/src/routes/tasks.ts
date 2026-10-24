@@ -1,5 +1,5 @@
 import { CompleteWorkOrderInput, type Evidence, type Polygon, type WorkOrder } from "@owner-os/shared";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, count, eq, exists, inArray, isNull } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/d1";
 import { Hono, type Context } from "hono";
 import { asset_units, assets, work_order_evidence, work_orders } from "../db/schema";
@@ -13,11 +13,25 @@ const MAX_ACCURACY_M = 100;
 const GEOFENCE_BUFFER_M = 15;
 const IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
 const ACTIVE_STATUSES = ["open", "in_progress"] as const;
+export const MAX_EVIDENCE_PER_WORK_ORDER = 20;
+const CAPTURED_AT_MAX_FUTURE_MS = 5 * 60 * 1000;
+const CAPTURED_AT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 // API layer uses ISO-8601 strings; D1 stores integer epoch ms.
 const toIso = (ms: number): string => new Date(ms).toISOString();
 
 const isActive = (status: string): boolean => (ACTIVE_STATUSES as readonly string[]).includes(status);
+
+type Db = ReturnType<typeof drizzle>;
+
+/** SQL condition "work order <id> is still open/in_progress", evaluated inside the same statement. */
+const workOrderIsActive = (db: Db, woId: string) =>
+  exists(
+    db
+      .select({ id: work_orders.id })
+      .from(work_orders)
+      .where(and(eq(work_orders.id, woId), inArray(work_orders.status, [...ACTIVE_STATUSES]))),
+  );
 
 function workOrderToApi(row: typeof work_orders.$inferSelect): WorkOrder {
   return {
@@ -65,6 +79,7 @@ async function findFence(c: AppContext, wo: typeof work_orders.$inferSelect): Pr
 const woNotFound = (c: AppContext) => c.json({ error: "work_order_not_found" }, 404);
 const evidenceNotFound = (c: AppContext) => c.json({ error: "evidence_not_found" }, 404);
 const notActive = (c: AppContext) => c.json({ error: "work_order_not_active" }, 409);
+const alreadyUploaded = (c: AppContext) => c.json({ error: "evidence_already_uploaded" }, 409);
 
 export const tasksRoutes = new Hono<{ Bindings: Env }>();
 
@@ -74,8 +89,15 @@ tasksRoutes.post("/:id/upload-ticket", async (c) => {
   if (!wo) return woNotFound(c);
   if (!isActive(wo.status)) return notActive(c);
 
+  const db = drizzle(c.env.DB);
+  const [existing] = await db
+    .select({ n: count() })
+    .from(work_order_evidence)
+    .where(eq(work_order_evidence.work_order_id, woId));
+  if ((existing?.n ?? 0) >= MAX_EVIDENCE_PER_WORK_ORDER) return c.json({ error: "evidence_limit" }, 429);
+
   const evidenceId = crypto.randomUUID();
-  await drizzle(c.env.DB)
+  await db
     .insert(work_order_evidence)
     .values({
       id: evidenceId,
@@ -88,9 +110,12 @@ tasksRoutes.post("/:id/upload-ticket", async (c) => {
 });
 
 tasksRoutes.put("/:id/evidence/:evidenceId", async (c) => {
-  const evidence = await findEvidence(c, c.req.param("id"), c.req.param("evidenceId"));
+  const woId = c.req.param("id");
+  const evidence = await findEvidence(c, woId, c.req.param("evidenceId"));
   if (!evidence) return evidenceNotFound(c);
-  if (evidence.uploaded_at !== null) return c.json({ error: "evidence_already_uploaded" }, 409);
+  const wo = await findWorkOrder(c, woId);
+  if (!wo || !isActive(wo.status)) return notActive(c);
+  if (evidence.uploaded_at !== null) return alreadyUploaded(c);
 
   const contentType = (c.req.header("content-type") ?? "").split(";")[0]?.trim().toLowerCase() ?? "";
   if (!IMAGE_TYPES.has(contentType)) return c.json({ error: "unsupported_media_type" }, 415);
@@ -102,12 +127,27 @@ tasksRoutes.put("/:id/evidence/:evidenceId", async (c) => {
   if (bytes.byteLength === 0) return c.json({ error: "empty_body" }, 400);
   if (bytes.byteLength > MAX_UPLOAD_BYTES) return c.json({ error: "payload_too_large" }, 413);
 
-  await c.env.BUCKET.put(evidence.r2_key, bytes, { httpMetadata: { contentType } });
-  await drizzle(c.env.DB)
+  // Reserve the slot atomically before writing to R2 so concurrent uploads cannot both succeed.
+  const db = drizzle(c.env.DB);
+  const reserved = await db
     .update(work_order_evidence)
     .set({ uploaded_at: Date.now() })
-    .where(eq(work_order_evidence.id, evidence.id))
-    .run();
+    .where(
+      and(
+        eq(work_order_evidence.id, evidence.id),
+        isNull(work_order_evidence.uploaded_at),
+        workOrderIsActive(db, woId),
+      ),
+    )
+    .returning({ id: work_order_evidence.id });
+  if (reserved.length !== 1) return alreadyUploaded(c);
+
+  try {
+    await c.env.BUCKET.put(evidence.r2_key, bytes, { httpMetadata: { contentType } });
+  } catch (err) {
+    await db.update(work_order_evidence).set({ uploaded_at: null }).where(eq(work_order_evidence.id, evidence.id)).run();
+    throw err;
+  }
   return c.body(null, 204);
 });
 
@@ -132,6 +172,12 @@ tasksRoutes.put("/:id/complete", async (c) => {
   if (!evidence) return evidenceNotFound(c);
 
   if (input.accuracy_m > MAX_ACCURACY_M) return c.json({ error: "accuracy_too_low" }, 422);
+
+  const capturedAtMs = Date.parse(input.captured_at);
+  const serverNow = Date.now();
+  if (capturedAtMs > serverNow + CAPTURED_AT_MAX_FUTURE_MS || capturedAtMs < serverNow - CAPTURED_AT_MAX_AGE_MS) {
+    return c.json({ error: "captured_at_out_of_range" }, 422);
+  }
   if ((await c.env.BUCKET.head(evidence.r2_key)) === null) return c.json({ error: "evidence_not_uploaded" }, 422);
 
   const fence = await findFence(c, wo);
@@ -140,10 +186,11 @@ tasksRoutes.put("/:id/complete", async (c) => {
   const geo = checkGeofence(input.lng, input.lat, fence, GEOFENCE_BUFFER_M);
   if (!geo.passed) return c.json({ error: "outside_geofence", distance_outside_m: geo.distance_outside_m }, 422);
 
+  // Both statements run in one D1 batch (a single transaction). The evidence write is conditioned on the
+  // work order still being active, so a request that loses a race leaves its evidence row untouched.
   const db = drizzle(c.env.DB);
   const now = Date.now();
-  const capturedAtMs = Date.parse(input.captured_at);
-  const [, [updatedWo]] = await db.batch([
+  const [updatedEvidence, [updatedWo]] = await db.batch([
     db
       .update(work_order_evidence)
       .set({
@@ -154,14 +201,15 @@ tasksRoutes.put("/:id/complete", async (c) => {
         inside_geofence: geo.inside,
         distance_outside_m: geo.distance_outside_m,
       })
-      .where(eq(work_order_evidence.id, evidence.id)),
+      .where(and(eq(work_order_evidence.id, evidence.id), workOrderIsActive(db, woId)))
+      .returning({ id: work_order_evidence.id }),
     db
       .update(work_orders)
       .set({ status: "submitted", updated_at: now })
       .where(and(eq(work_orders.id, woId), inArray(work_orders.status, [...ACTIVE_STATUSES])))
       .returning(),
   ]);
-  if (!updatedWo) return notActive(c);
+  if (updatedEvidence.length !== 1 || !updatedWo) return notActive(c);
 
   const evidenceOut: Evidence = {
     id: evidence.id,

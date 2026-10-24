@@ -1,6 +1,7 @@
 import type { Asset, AssetUnit, Evidence, Polygon, WorkOrder } from "@owner-os/shared";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Env } from "../src/env";
+import { MAX_EVIDENCE_PER_WORK_ORDER } from "../src/routes/tasks";
 import { app } from "../src/index";
 import { authHeader, createTestEnv, type TestEnv } from "./d1";
 
@@ -36,7 +37,10 @@ const eastBy = (m: number) => ({ lng: D + m * M, lat: D / 2 });
 
 // Fake JPEG: just the SOI/APP0 marker bytes.
 const FAKE_JPEG = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46]);
-const NOW = "2026-10-23T09:00:00.000Z";
+// Server checks captured_at against its own clock, so fixtures are relative to the real time.
+const NOW = new Date(Date.now() - 60_000).toISOString();
+const MINUTE = 60_000;
+const HOUR = 60 * MINUTE;
 
 async function request(method: string, path: string, body?: unknown, contentType = "application/json") {
   const init: RequestInit = { method, headers: authHeader };
@@ -152,6 +156,51 @@ describe("PUT evidence", () => {
     const tb = await ticket(b.wo.id);
     const res = await request("PUT", `/api/tasks/${a.wo.id}/evidence/${tb.evidence_id}`, FAKE_JPEG, "image/jpeg");
     expect(res.status).toBe(404);
+  });
+});
+
+describe("PUT evidence on an inactive work order", () => {
+  it("rejects an upload to a submitted work order with 409", async () => {
+    const { wo } = await setup();
+    const done = await ticketAndUpload(wo.id);
+    const pending = await ticket(wo.id);
+    expect((await complete(wo.id, fix(done.evidence_id, INSIDE))).status).toBe(200);
+
+    expect((await request("PUT", pending.upload_url, FAKE_JPEG, "image/jpeg")).status).toBe(409);
+    const row = await env.DB.prepare("SELECT uploaded_at FROM work_order_evidence WHERE id = ?")
+      .bind(pending.evidence_id)
+      .first();
+    expect(row).toEqual({ uploaded_at: null });
+    expect(await env.BUCKET.head(`work-orders/${wo.id}/${pending.evidence_id}`)).toBeNull();
+  });
+
+  it("lets only one of two concurrent uploads of the same evidence win", async () => {
+    const { wo } = await setup();
+    const t = await ticket(wo.id);
+    const statuses = (
+      await Promise.all([
+        request("PUT", t.upload_url, FAKE_JPEG, "image/jpeg"),
+        request("PUT", t.upload_url, FAKE_JPEG, "image/jpeg"),
+      ])
+    )
+      .map((r) => r.status)
+      .sort();
+    expect(statuses).toEqual([204, 409]);
+  });
+});
+
+describe("evidence limit", () => {
+  it(`allows ${MAX_EVIDENCE_PER_WORK_ORDER} tickets per work order and rejects the next with 429`, async () => {
+    expect(MAX_EVIDENCE_PER_WORK_ORDER).toBe(20);
+    const { wo } = await setup();
+    for (let i = 0; i < MAX_EVIDENCE_PER_WORK_ORDER; i++) {
+      expect((await request("POST", `/api/tasks/${wo.id}/upload-ticket`)).status).toBe(201);
+    }
+    const body = await json<{ error: string }>(await request("POST", `/api/tasks/${wo.id}/upload-ticket`), 429);
+    expect(body.error).toBe("evidence_limit");
+
+    const other = await setup();
+    expect((await request("POST", `/api/tasks/${other.wo.id}/upload-ticket`)).status).toBe(201);
   });
 });
 
@@ -292,5 +341,60 @@ describe("PUT complete", () => {
     expect((await complete("nope", fix("x", INSIDE))).status).toBe(404);
     const { wo } = await setup();
     expect((await request("PUT", `/api/tasks/${wo.id}/complete`, "{", "application/json")).status).toBe(400);
+  });
+
+  it("lets only one of two concurrent completes win and leaves the loser's evidence untouched", async () => {
+    const { wo } = await setup();
+    const a = await ticketAndUpload(wo.id);
+    const b = await ticketAndUpload(wo.id);
+    const [ra, rb] = await Promise.all([
+      complete(wo.id, fix(a.evidence_id, INSIDE)),
+      complete(wo.id, fix(b.evidence_id, INSIDE)),
+    ]);
+    expect([ra.status, rb.status].sort()).toEqual([200, 409]);
+
+    const loser = ra.status === 409 ? a : b;
+    const row = await env.DB.prepare(
+      "SELECT COUNT(*) AS n FROM work_order_evidence WHERE id = ? AND lat IS NULL AND inside_geofence IS NULL",
+    )
+      .bind(loser.evidence_id)
+      .first<{ n: number }>();
+    expect(row?.n).toBe(1);
+    const woRow = await env.DB.prepare("SELECT status FROM work_orders WHERE id = ?").bind(wo.id).first();
+    expect(woRow).toEqual({ status: "submitted" });
+  });
+
+  it("rejects captured_at more than 5 minutes in the future with 422", async () => {
+    const { wo } = await setup();
+    const t = await ticketAndUpload(wo.id);
+    const future = new Date(Date.now() + 6 * MINUTE).toISOString();
+    const body = await json<{ error: string }>(
+      await complete(wo.id, { ...fix(t.evidence_id, INSIDE), captured_at: future }),
+      422,
+    );
+    expect(body.error).toBe("captured_at_out_of_range");
+  });
+
+  it("rejects captured_at older than 24 hours with 422", async () => {
+    const { wo } = await setup();
+    const t = await ticketAndUpload(wo.id);
+    const old = new Date(Date.now() - 25 * HOUR).toISOString();
+    const body = await json<{ error: string }>(
+      await complete(wo.id, { ...fix(t.evidence_id, INSIDE), captured_at: old }),
+      422,
+    );
+    expect(body.error).toBe("captured_at_out_of_range");
+  });
+
+  it("accepts captured_at slightly in the future and 23 hours ago", async () => {
+    const a = await setup();
+    const ta = await ticketAndUpload(a.wo.id);
+    const soon = new Date(Date.now() + 2 * MINUTE).toISOString();
+    expect((await complete(a.wo.id, { ...fix(ta.evidence_id, INSIDE), captured_at: soon })).status).toBe(200);
+
+    const b = await setup();
+    const tb = await ticketAndUpload(b.wo.id);
+    const earlier = new Date(Date.now() - 23 * HOUR).toISOString();
+    expect((await complete(b.wo.id, { ...fix(tb.evidence_id, INSIDE), captured_at: earlier })).status).toBe(200);
   });
 });
