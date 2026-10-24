@@ -37,15 +37,16 @@ export class ApiError extends Error {
   }
 }
 
-/**
- * GET a JSON endpoint with the stored bearer token (or `token` when validating a new one).
- * On 401 the stored token is cleared and UNAUTHORIZED_EVENT is dispatched so the UI returns to the token screen.
- */
-export async function apiGet<T>(path: string, token: string | null = getToken()): Promise<T> {
+async function request<T>(method: "GET" | "POST", path: string, token: string | null, body?: unknown): Promise<T> {
   const headers: Record<string, string> = { accept: "application/json" };
   if (token) headers.authorization = `Bearer ${token}`;
+  const init: RequestInit = { method, headers };
+  if (body !== undefined) {
+    headers["content-type"] = "application/json";
+    init.body = JSON.stringify(body);
+  }
 
-  const res = await fetch(path, { headers });
+  const res = await fetch(path, init);
   if (res.status === 401) {
     clearToken();
     window.dispatchEvent(new Event(UNAUTHORIZED_EVENT));
@@ -60,4 +61,17 @@ export async function apiGet<T>(path: string, token: string | null = getToken())
     throw new ApiError(res.status, code);
   }
   return (await res.json()) as T;
+}
+
+/**
+ * GET a JSON endpoint with the stored bearer token (or `token` when validating a new one).
+ * On 401 the stored token is cleared and UNAUTHORIZED_EVENT is dispatched so the UI returns to the token screen.
+ */
+export function apiGet<T>(path: string, token: string | null = getToken()): Promise<T> {
+  return request<T>("GET", path, token);
+}
+
+/** POST a JSON body with the stored bearer token; same 401 handling as apiGet. */
+export function apiPost<T>(path: string, body: unknown, token: string | null = getToken()): Promise<T> {
+  return request<T>("POST", path, token, body);
 }

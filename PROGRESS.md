@@ -19,7 +19,7 @@
 ## Milestone 3: Web Dashboard
 - [x] Task 3.0: read API สำหรับ dashboard
 - [x] Task 3.1: apps/web — Vite + React + Tailwind + proxy ไป Worker
-- [ ] Task 3.2: Leaflet วาดแปลง + คำนวณพื้นที่ด้วย Turf + บันทึก GeoJSON
+- [x] Task 3.2: Leaflet วาดแปลง + คำนวณพื้นที่ด้วย Turf + บันทึก GeoJSON
 - [ ] Task 3.3: Owner Audit Dashboard — สถานะแปลง + รูป proof-of-work พร้อมหมุดบนแผนที่
 
 ## Milestone 4: Operational Engine & Settlements (รอกติกาจากเจ้าของ)

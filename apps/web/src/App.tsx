@@ -1,5 +1,5 @@
 import type { Asset, AssetKind, WorkOrderStatus } from "@owner-os/shared";
-import { useCallback, useEffect, useState, type FormEvent } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { apiGet, ApiError, clearToken, getToken, setToken, UNAUTHORIZED_EVENT } from "./api";
 
 export type AssetListItem = Asset & {
@@ -8,7 +8,10 @@ export type AssetListItem = Asset & {
 };
 type AssetsResponse = { assets: AssetListItem[] };
 
-const KIND_LABEL: Record<AssetKind, string> = {
+// Leaflet is only loaded when an asset detail page is opened.
+const AssetDetail = lazy(() => import("./AssetDetail").then((m) => ({ default: m.AssetDetail })));
+
+export const KIND_LABEL: Record<AssetKind, string> = {
   farm: "ฟาร์ม",
   property: "อสังหาฯ",
   equipment: "อุปกรณ์",
@@ -32,16 +35,39 @@ function errorMessage(err: unknown): string {
   return "เชื่อมต่อเซิร์ฟเวอร์ไม่ได้";
 }
 
+/** Minimal hash routing: "#/assets/<id>" opens the detail page, anything else is the list. */
+function assetIdFromHash(hash: string): string | null {
+  const match = /^#\/assets\/([^/]+)$/.exec(hash);
+  return match?.[1] ? decodeURIComponent(match[1]) : null;
+}
+
+function useHashAssetId(): string | null {
+  const [assetId, setAssetId] = useState(() => assetIdFromHash(window.location.hash));
+  useEffect(() => {
+    const onHashChange = () => setAssetId(assetIdFromHash(window.location.hash));
+    window.addEventListener("hashchange", onHashChange);
+    return () => window.removeEventListener("hashchange", onHashChange);
+  }, []);
+  return assetId;
+}
+
 export function App() {
   const [token, setTokenState] = useState<string | null>(() => getToken());
   const [assets, setAssets] = useState<AssetListItem[] | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const assetId = useHashAssetId();
+  // Only a session that was signed in gets the "token no longer valid" notice; a wrong token typed on the
+  // token screen already shows its own error.
+  const signedInRef = useRef(token !== null);
+  useEffect(() => {
+    signedInRef.current = token !== null;
+  }, [token]);
 
   useEffect(() => {
     const onUnauthorized = () => {
+      if (signedInRef.current) setNotice("token ใช้ไม่ได้แล้ว กรุณากรอกใหม่");
       setTokenState(null);
       setAssets(null);
-      setNotice("token ใช้ไม่ได้แล้ว กรุณากรอกใหม่");
     };
     window.addEventListener(UNAUTHORIZED_EVENT, onUnauthorized);
     return () => window.removeEventListener(UNAUTHORIZED_EVENT, onUnauthorized);
@@ -64,7 +90,11 @@ export function App() {
   return (
     <main className="mx-auto max-w-3xl p-4">
       <h1 className="mb-4 text-xl font-bold">owner-os · แดชบอร์ดเจ้าของ</h1>
-      {token ? (
+      {token && assetId ? (
+        <Suspense fallback={<p className="text-slate-500">กำลังโหลดแผนที่…</p>}>
+          <AssetDetail key={assetId} assetId={assetId} onBack={() => (window.location.hash = "")} />
+        </Suspense>
+      ) : token ? (
         <AssetsScreen initial={assets} onLoaded={setAssets} onLogout={logout} />
       ) : (
         <TokenScreen notice={notice} onSignedIn={signedIn} />
@@ -189,7 +219,11 @@ function AssetCard({ asset }: { asset: AssetListItem }) {
   return (
     <li className="rounded-xl bg-white p-4 shadow-sm" data-testid="asset-card">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
-        <h3 className="font-semibold">{asset.name}</h3>
+        <h3 className="font-semibold">
+          <a href={`#/assets/${encodeURIComponent(asset.id)}`} className="text-blue-700 underline">
+            {asset.name}
+          </a>
+        </h3>
         <span className="text-sm text-slate-500">{KIND_LABEL[asset.kind]}</span>
       </div>
       <p className="mt-1 text-sm text-slate-600">{asset.unit_count} แปลง/หน่วย</p>

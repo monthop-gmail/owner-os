@@ -1,5 +1,6 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { apiPost, UNAUTHORIZED_EVENT } from "./api";
 import { App, type AssetListItem } from "./App";
 
 const sample: AssetListItem[] = [
@@ -76,6 +77,9 @@ describe("App", () => {
     render(<App />);
     enterToken("wrong");
     expect((await screen.findByRole("alert")).textContent).toBe("API token ไม่ถูกต้อง");
+    // Exactly one message: the "token no longer valid" notice is only for sessions that were signed in.
+    expect(screen.getAllByRole("alert")).toHaveLength(1);
+    expect(screen.queryByText("token ใช้ไม่ได้แล้ว กรุณากรอกใหม่")).toBeNull();
     expect(screen.getByLabelText("API token")).toBeTruthy();
     expect(localStorage.getItem("owner-os.token")).toBeNull();
   });
@@ -101,5 +105,51 @@ describe("App", () => {
     fireEvent.click(screen.getByRole("button", { name: "ออกจากระบบ" }));
     expect(screen.getByLabelText("API token")).toBeTruthy();
     expect(localStorage.getItem("owner-os.token")).toBeNull();
+  });
+});
+
+describe("apiPost", () => {
+  it("sends the stored Bearer token and a JSON body", async () => {
+    localStorage.setItem("owner-os.token", "stored-test-token");
+    fetchMock.mockResolvedValueOnce(jsonResponse(201, { id: "u-1" }));
+    const body = { name: "แปลง 1", unit_type: "plot", boundary: { type: "Polygon", coordinates: [] } };
+
+    await expect(apiPost("/api/assets/a-1/units", body)).resolves.toEqual({ id: "u-1" });
+    const [path, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const headers = init.headers as Record<string, string>;
+    expect(path).toBe("/api/assets/a-1/units");
+    expect(init.method).toBe("POST");
+    expect(headers.authorization).toBe("Bearer stored-test-token");
+    expect(headers["content-type"]).toBe("application/json");
+    expect(JSON.parse(init.body as string)).toEqual(body);
+  });
+
+  it("clears the token and dispatches the unauthorized event on 401", async () => {
+    localStorage.setItem("owner-os.token", "expired-test-token");
+    fetchMock.mockResolvedValueOnce(jsonResponse(401, { error: "unauthorized" }));
+    const onUnauthorized = vi.fn();
+    window.addEventListener(UNAUTHORIZED_EVENT, onUnauthorized);
+    try {
+      await expect(apiPost("/api/assets", {})).rejects.toMatchObject({ status: 401, code: "unauthorized" });
+    } finally {
+      window.removeEventListener(UNAUTHORIZED_EVENT, onUnauthorized);
+    }
+    expect(onUnauthorized).toHaveBeenCalledTimes(1);
+    expect(localStorage.getItem("owner-os.token")).toBeNull();
+  });
+
+  it("rejects with the API error code on 400", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(400, { error: "validation_error", issues: [] }));
+    await expect(apiPost("/api/assets/a-1/units", {})).rejects.toMatchObject({ status: 400, code: "validation_error" });
+  });
+});
+
+describe("hash routing", () => {
+  it("links each asset to #/assets/<id>", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(200, { assets: sample }));
+    render(<App />);
+    enterToken("typed-test-token");
+    const link = await screen.findByRole("link", { name: "สวนทดสอบ (demo)" });
+    expect(link.getAttribute("href")).toBe("#/assets/a-1");
   });
 });
