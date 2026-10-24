@@ -42,6 +42,17 @@ describe("GET /test-camera", () => {
     expect(body).toContain('"authorization": "Bearer "');
   });
 
+  it("retries with the already-uploaded evidence instead of a new ticket", async () => {
+    const body = await (await app.request("/test-camera", {}, env)).text();
+    expect(body).toContain("function rememberUploadedEvidence(");
+    expect(body).toContain("function forgetUploadedEvidence(");
+    expect(body).toContain("function reusableEvidenceId(");
+    // Retry path skips upload-ticket; a new photo or another work order id clears the remembered evidence.
+    expect(body).toMatch(/if \(reuseId\) \{[\s\S]*?Promise\.resolve\(reuseId\)/);
+    expect(body).toMatch(/if \(!file\) return;\s*forgetUploadedEvidence\(\);/);
+    expect(body).toMatch(/if \(id === "wo"\) forgetUploadedEvidence\(\);/);
+  });
+
   it("still requires a token for /api/*", async () => {
     const res = await app.request("/api/assets", { method: "POST" }, env);
     expect(res.status).toBe(401);

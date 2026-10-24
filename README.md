@@ -8,3 +8,21 @@ owner-os คือระบบสำหรับเจ้าของสิน�
 pnpm install
 pnpm typecheck
 ```
+
+## Demo data
+
+Seeds 4 synthetic demo assets (units, work orders, 3 with proof-of-work) **through the API** from `apps/worker/fixtures/demo-seed.json`.
+Running it again creates duplicates (there is no GET/DELETE API yet).
+
+```sh
+cd apps/worker
+pnpm seed:demo --dry-run                      # print the plan, send nothing
+
+# local: apply migrations, then start the Worker with a local-only token
+pnpm db:migrate:local
+pnpm exec wrangler dev --local --var API_TOKEN:change-me-local-only
+OWNER_OS_URL=http://localhost:8787 OWNER_OS_TOKEN=change-me-local-only pnpm seed:demo
+
+# deployed Worker
+OWNER_OS_URL=https://<your-worker-url> OWNER_OS_TOKEN=<API_TOKEN> pnpm seed:demo
+```

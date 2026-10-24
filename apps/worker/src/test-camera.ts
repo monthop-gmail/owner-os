@@ -74,13 +74,27 @@ export const TEST_CAMERA_HTML = `<!doctype html>
   var $ = function (id) { return document.getElementById(id); };
   var state = { pos: null, blob: null, capturedAt: null, previewUrl: null };
 
+  // Evidence already uploaded for the current photo + work order. A retry after a 422 (outside fence,
+  // poor GPS, stale time) reuses it and only calls PUT /complete, so retries do not use up the quota.
+  var uploadedEvidence = null; // { evidenceId, workOrderId }
+  function rememberUploadedEvidence(evidenceId, workOrderId) {
+    uploadedEvidence = { evidenceId: evidenceId, workOrderId: workOrderId };
+  }
+  function forgetUploadedEvidence() { uploadedEvidence = null; }
+  function reusableEvidenceId(workOrderId) {
+    return uploadedEvidence && uploadedEvidence.workOrderId === workOrderId ? uploadedEvidence.evidenceId : null;
+  }
+
   function store(key, value) { try { localStorage.setItem(key, value); } catch (e) {} }
   function load(key) { try { return localStorage.getItem(key) || ""; } catch (e) { return ""; } }
 
   ["token", "wo"].forEach(function (id) {
     var el = $(id);
     el.value = load("owner-os." + id);
-    el.addEventListener("input", function () { store("owner-os." + id, el.value.trim()); });
+    el.addEventListener("input", function () {
+      store("owner-os." + id, el.value.trim());
+      if (id === "wo") forgetUploadedEvidence();
+    });
   });
 
   function show(el, text, kind) {
@@ -148,6 +162,7 @@ export const TEST_CAMERA_HTML = `<!doctype html>
     var file = ev.target.files && ev.target.files[0];
     var out = $("photoOut");
     if (!file) return;
+    forgetUploadedEvidence();
     state.capturedAt = isoWithOffset(new Date());
     state.blob = null;
     show(out, "กำลังย่อรูป…", "muted");
@@ -219,16 +234,26 @@ export const TEST_CAMERA_HTML = `<!doctype html>
     var btn = $("send");
     btn.disabled = true;
     var base = "/api/tasks/" + encodeURIComponent(wo);
-    show(out, "1/3 ขอตั๋วอัปโหลด…", "muted");
-    call("POST", base + "/upload-ticket", token)
-      .then(function (ticket) {
+    var reuseId = reusableEvidenceId(wo);
+    var uploaded;
+    if (reuseId) {
+      // Same photo, same work order: skip ticket + upload and only re-check with the latest position.
+      uploaded = Promise.resolve(reuseId);
+    } else {
+      show(out, "1/3 ขอตั๋วอัปโหลด…", "muted");
+      uploaded = call("POST", base + "/upload-ticket", token).then(function (ticket) {
         show(out, "2/3 อัปโหลดรูป " + fmtBytes(state.blob.size) + "…", "muted");
-        return call("PUT", ticket.upload_url, token, state.blob, "image/jpeg").then(function () { return ticket; });
-      })
-      .then(function (ticket) {
-        show(out, "3/3 ตรวจพิกัด…", "muted");
+        return call("PUT", ticket.upload_url, token, state.blob, "image/jpeg").then(function () {
+          rememberUploadedEvidence(ticket.evidence_id, wo);
+          return ticket.evidence_id;
+        });
+      });
+    }
+    uploaded
+      .then(function (evidenceId) {
+        show(out, (reuseId ? "ส่งใหม่ด้วยรูปเดิม · " : "3/3 ") + "ตรวจพิกัด…", "muted");
         return call("PUT", base + "/complete", token, JSON.stringify({
-          evidence_id: ticket.evidence_id,
+          evidence_id: evidenceId,
           lat: state.pos.lat,
           lng: state.pos.lng,
           accuracy_m: state.pos.accuracy_m,
@@ -236,6 +261,7 @@ export const TEST_CAMERA_HTML = `<!doctype html>
         }), "application/json");
       })
       .then(function (res) {
+        forgetUploadedEvidence();
         var ev = res.evidence;
         var msg = ev.inside_geofence
           ? "ส่งสำเร็จ อยู่ในแปลง (ระยะนอกแปลง 0 ม.)"
