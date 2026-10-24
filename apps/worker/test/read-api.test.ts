@@ -154,6 +154,51 @@ describe("GET /api/evidence", () => {
     expect((await json<{ evidence: PinEvidence[] }>("/api/evidence?limit=500")).evidence).toHaveLength(3);
   });
 
+  it("excludes evidence that was uploaded but failed the geofence (no coordinates)", async () => {
+    const durian = assetsByName.get(DURIAN)!;
+    const detail = await json<{ units: AssetUnit[] }>(`/api/assets/${durian.id}`);
+    const send = (method: "POST" | "PUT", path: string, body?: BodyInit, contentType = "application/json") =>
+      app.request(path, { method, headers: { ...authHeader, "content-type": contentType }, ...(body ? { body } : {}) }, env);
+
+    const woRes = await send(
+      "POST",
+      `/api/assets/${durian.id}/work-orders`,
+      JSON.stringify({ title: "ตรวจนอกแปลง", unit_id: detail.units[0]!.id }),
+    );
+    expect(woRes.status).toBe(201);
+    const wo = (await woRes.json()) as WorkOrder;
+    const ticket = (await (await send("POST", `/api/tasks/${wo.id}/upload-ticket`)).json()) as {
+      evidence_id: string;
+      upload_url: string;
+    };
+    expect((await send("PUT", ticket.upload_url, tinyJpeg(), "image/jpeg")).status).toBe(204);
+
+    // ~1 km east of the durian plot (fictional point), so the fence check fails and nothing is written.
+    const complete = await send(
+      "PUT",
+      `/api/tasks/${wo.id}/complete`,
+      JSON.stringify({
+        evidence_id: ticket.evidence_id,
+        lat: 16.441,
+        lng: 102.845,
+        accuracy_m: 10,
+        captured_at: new Date().toISOString(),
+      }),
+    );
+    expect(complete.status).toBe(422);
+    expect(((await complete.json()) as { error: string }).error).toBe("outside_geofence");
+
+    // Uploaded (shows in task detail) but has no coordinates -> not a map pin.
+    const task = await json<{ evidence: EvidenceApi[] }>(`/api/tasks/${wo.id}`);
+    expect(task.evidence.map((e) => e.id)).toEqual([ticket.evidence_id]);
+    expect(task.evidence[0]).toMatchObject({ lat: null, lng: null });
+
+    const pins = await json<{ evidence: PinEvidence[] }>(`/api/evidence?limit=500`);
+    expect(pins.evidence.map((e) => e.id)).not.toContain(ticket.evidence_id);
+    const durianPins = await json<{ evidence: PinEvidence[] }>(`/api/evidence?asset_id=${durian.id}`);
+    expect(durianPins.evidence.map((e) => e.id)).not.toContain(ticket.evidence_id);
+  });
+
   it("rejects limit 600 (and non-numeric limits) with 400 instead of clamping", async () => {
     expect((await get("/api/evidence?limit=600")).status).toBe(400);
     expect((await get("/api/evidence?limit=0")).status).toBe(400);
@@ -168,6 +213,7 @@ describe("GET /api/evidence/:id/image", () => {
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toBe("image/jpeg");
     expect(res.headers.get("cache-control")).toBe("private, max-age=300");
+    expect(res.headers.get("x-content-type-options")).toBe("nosniff");
     expect(new Uint8Array(await res.arrayBuffer())).toEqual(tinyJpeg());
   });
 

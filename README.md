@@ -9,6 +9,20 @@ pnpm install
 pnpm typecheck
 ```
 
+## Web dashboard (dev)
+
+Two terminals; the Vite dev server proxies `/api` and `/test-camera` to the local Worker on :8787.
+
+```sh
+# 1) Worker (local D1/R2, local-only token)
+cd apps/worker && pnpm db:migrate:local && pnpm exec wrangler dev --local --var API_TOKEN:change-me-local-only
+
+# 2) Web
+pnpm --filter @owner-os/web dev
+```
+
+Open the URL Vite prints and enter the same token. The token is only stored in that browser's localStorage.
+
 ## Demo data
 
 Seeds 4 synthetic demo assets (units, work orders, 3 with proof-of-work) **through the API** from `apps/worker/fixtures/demo-seed.json`.

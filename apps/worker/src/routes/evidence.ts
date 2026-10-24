@@ -77,6 +77,7 @@ evidenceRoutes.get("/:id/image", async (c) => {
     "content-type": object.httpMetadata?.contentType ?? "application/octet-stream",
     "content-length": String(object.size),
     "cache-control": IMAGE_CACHE_CONTROL,
+    "x-content-type-options": "nosniff",
     etag: object.httpEtag,
   });
 });
