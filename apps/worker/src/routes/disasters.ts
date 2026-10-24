@@ -184,17 +184,17 @@ disasterEventsRoutes.post("/:id/evidence", async (c) => {
   return c.json(detail, 201);
 });
 
-/** Mounted at /api/crop-cycles: disasters that hit the cycle's unit during the cycle. */
-export const cycleDisasterRoutes = new Hono<{ Bindings: Env }>();
-
-cycleDisasterRoutes.get("/:id/disaster-impact", async (c) => {
-  const db = drizzle(c.env.DB);
-  const cycle = await db.select().from(farm_crop_cycles).where(eq(farm_crop_cycles.id, c.req.param("id"))).get();
-  if (!cycle) return c.json({ error: "crop_cycle_not_found" }, 404);
-
+/**
+ * Disaster events on the cycle's unit between started_at (or created_at) and ended_at (or now), oldest
+ * first, with that unit's damage. Shared by the impact route and the settlement preview.
+ */
+export async function cycleDisasterEvents(
+  db: Db,
+  cycle: { unit_id: string; started_at: number | null; created_at: number; ended_at: number | null },
+) {
   const from = cycle.started_at ?? cycle.created_at;
   const to = cycle.ended_at ?? Date.now();
-  const rows = await db
+  const events = await db
     .select({
       id: disaster_events.id,
       event_type: disaster_events.event_type,
@@ -211,6 +211,18 @@ cycleDisasterRoutes.get("/:id/disaster-impact", async (c) => {
       ),
     )
     .orderBy(asc(disaster_events.occurred_at));
+  return { from, to, events };
+}
+
+/** Mounted at /api/crop-cycles: disasters that hit the cycle's unit during the cycle. */
+export const cycleDisasterRoutes = new Hono<{ Bindings: Env }>();
+
+cycleDisasterRoutes.get("/:id/disaster-impact", async (c) => {
+  const db = drizzle(c.env.DB);
+  const cycle = await db.select().from(farm_crop_cycles).where(eq(farm_crop_cycles.id, c.req.param("id"))).get();
+  if (!cycle) return c.json({ error: "crop_cycle_not_found" }, 404);
+
+  const { from, to, events: rows } = await cycleDisasterEvents(db, cycle);
 
   return c.json({
     crop_cycle_id: cycle.id,

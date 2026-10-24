@@ -140,17 +140,36 @@ export function contractTermsToStored(t: ContractTerms): StoredContractTerms {
         management_retainer_monthly_satang: thbToSatang(t.management_retainer_monthly_thb),
         retainer_timing: t.retainer_timing,
         loss_policy: t.loss_policy,
+        ...(t.disaster_clause && {
+          disaster_clause: {
+            min_damage_bps: pctToBps(t.disaster_clause.min_damage_pct),
+            loss_policy_on_disaster: t.disaster_clause.loss_policy_on_disaster,
+            insurance_recipient: t.disaster_clause.insurance_recipient,
+          },
+        }),
       };
     case "pay_per_job":
       return {
         contract_type: t.contract_type,
         rates: t.rates.map((r) => ({ job_key: r.job_key, label: r.label, unit: r.unit, rate_satang: thbToSatang(r.rate_thb) })),
+        ...(t.disaster_clause && {
+          disaster_clause: {
+            min_damage_bps: pctToBps(t.disaster_clause.min_damage_pct),
+            cancellation_fee_bps_on_disaster: pctToBps(t.disaster_clause.cancellation_fee_pct_on_disaster),
+          },
+        }),
       };
     case "property_management":
       return {
         contract_type: t.contract_type,
         revenue_commission_bps: pctToBps(t.revenue_commission_pct),
         cleaning_fee_per_turnover_satang: thbToSatang(t.cleaning_fee_per_turnover_thb),
+        ...(t.disaster_clause && {
+          disaster_clause: {
+            min_damage_bps: pctToBps(t.disaster_clause.min_damage_pct),
+            repair_cost_owner_bps: pctToBps(t.disaster_clause.repair_cost_owner_pct),
+          },
+        }),
       };
     case "fixed_target_bonus":
       return {
@@ -159,6 +178,13 @@ export function contractTermsToStored(t: ContractTerms): StoredContractTerms {
         excess_operator_bps: pctToBps(t.excess_operator_pct),
         opex_borne_by: t.opex_borne_by,
         shortfall_policy: t.shortfall_policy,
+        ...(t.disaster_clause && {
+          disaster_clause: {
+            min_damage_bps: pctToBps(t.disaster_clause.min_damage_pct),
+            target_adjustment: t.disaster_clause.target_adjustment,
+            insurance_recipient: t.disaster_clause.insurance_recipient,
+          },
+        }),
       };
   }
 }
@@ -173,17 +199,36 @@ export function contractTermsFromStored(s: StoredContractTerms): ContractTerms {
         management_retainer_monthly_thb: satangToThb(s.management_retainer_monthly_satang),
         retainer_timing: s.retainer_timing,
         loss_policy: s.loss_policy,
+        ...(s.disaster_clause && {
+          disaster_clause: {
+            min_damage_pct: bpsToPct(s.disaster_clause.min_damage_bps),
+            loss_policy_on_disaster: s.disaster_clause.loss_policy_on_disaster,
+            insurance_recipient: s.disaster_clause.insurance_recipient,
+          },
+        }),
       };
     case "pay_per_job":
       return {
         contract_type: s.contract_type,
         rates: s.rates.map((r) => ({ job_key: r.job_key, label: r.label, unit: r.unit, rate_thb: satangToThb(r.rate_satang) })),
+        ...(s.disaster_clause && {
+          disaster_clause: {
+            min_damage_pct: bpsToPct(s.disaster_clause.min_damage_bps),
+            cancellation_fee_pct_on_disaster: bpsToPct(s.disaster_clause.cancellation_fee_bps_on_disaster),
+          },
+        }),
       };
     case "property_management":
       return {
         contract_type: s.contract_type,
         revenue_commission_pct: bpsToPct(s.revenue_commission_bps),
         cleaning_fee_per_turnover_thb: satangToThb(s.cleaning_fee_per_turnover_satang),
+        ...(s.disaster_clause && {
+          disaster_clause: {
+            min_damage_pct: bpsToPct(s.disaster_clause.min_damage_bps),
+            repair_cost_owner_pct: bpsToPct(s.disaster_clause.repair_cost_owner_bps),
+          },
+        }),
       };
     case "fixed_target_bonus":
       return {
@@ -192,6 +237,13 @@ export function contractTermsFromStored(s: StoredContractTerms): ContractTerms {
         excess_operator_pct: bpsToPct(s.excess_operator_bps),
         opex_borne_by: s.opex_borne_by,
         shortfall_policy: s.shortfall_policy,
+        ...(s.disaster_clause && {
+          disaster_clause: {
+            min_damage_pct: bpsToPct(s.disaster_clause.min_damage_bps),
+            target_adjustment: s.disaster_clause.target_adjustment,
+            insurance_recipient: s.disaster_clause.insurance_recipient,
+          },
+        }),
       };
   }
 }

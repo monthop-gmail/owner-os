@@ -1,5 +1,7 @@
 import {
+  combinedDamageBps,
   computeSettlement,
+  pctToBps,
   CreateContractInput,
   FixedTargetPreviewInput,
   PayPerJobPreviewInput,
@@ -8,6 +10,7 @@ import {
   SettlementError,
   thbToSatang,
   TurnkeyPreviewInput,
+  type DisasterInput,
   type SettlementInput,
 } from "@owner-os/shared";
 import { and, desc, eq, sql, sum } from "drizzle-orm";
@@ -16,6 +19,7 @@ import { Hono, type Context } from "hono";
 import { asset_contracts, asset_units, assets, farm_crop_cycles, farm_harvest_logs } from "../db/schema";
 import type { Env } from "../env";
 import { contractTermsToStored, contractToApi, toMs, type StoredContractTerms } from "../mappers";
+import { cycleDisasterEvents } from "./disasters";
 
 type AppContext = Context<{ Bindings: Env }>;
 
@@ -110,6 +114,21 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const MONTH_MS = 30 * DAY_MS;
 
 type RevenueSource = { revenue_from: "harvest_logs"; crop_cycle_id: string } | { revenue_from: "input" };
+type DamageSource =
+  | { damage_from: "events"; damage_pct: number; disaster_event_ids: string[] }
+  | { damage_from: "input"; damage_pct: number }
+  | { damage_from: null };
+
+/** Disaster context from the body (baht / percent); null when there is no damage and no money received. */
+function disasterInput(
+  damageBps: number | undefined,
+  body: { insurance_thb?: number | undefined; government_aid_thb?: number | undefined },
+): DisasterInput | undefined {
+  const insurance = body.insurance_thb === undefined ? 0 : thbToSatang(body.insurance_thb);
+  const aid = body.government_aid_thb === undefined ? 0 : thbToSatang(body.government_aid_thb);
+  if (damageBps === undefined && insurance === 0 && aid === 0) return undefined;
+  return { damage_bps: damageBps ?? 0, insurance_satang: insurance, government_aid_satang: aid };
+}
 
 /**
  * Draft settlement for one contract — preview only: nothing is written to the database and nothing is paid.
@@ -125,7 +144,12 @@ contractsRoutes.post("/:id/settlement-preview", async (c) => {
   /** Revenue from the cycle's harvest logs; the cycle must belong to the contract's asset. */
   const cycleRevenue = async (cropCycleId: string) => {
     const cycle = await db
-      .select({ started_at: farm_crop_cycles.started_at, ended_at: farm_crop_cycles.ended_at })
+      .select({
+        unit_id: farm_crop_cycles.unit_id,
+        started_at: farm_crop_cycles.started_at,
+        ended_at: farm_crop_cycles.ended_at,
+        created_at: farm_crop_cycles.created_at,
+      })
       .from(farm_crop_cycles)
       .innerJoin(asset_units, eq(asset_units.id, farm_crop_cycles.unit_id))
       .where(and(eq(farm_crop_cycles.id, cropCycleId), eq(asset_units.asset_id, contract.asset_id)))
@@ -141,6 +165,13 @@ contractsRoutes.post("/:id/settlement-preview", async (c) => {
 
   let input: SettlementInput;
   let source: RevenueSource = { revenue_from: "input" };
+  let damageSource: DamageSource = { damage_from: null };
+  /** Damage given in the body wins; otherwise the caller may fall back to the cycle's disaster events. */
+  const inputDamage = (damagePct: number | undefined): number | undefined => {
+    if (damagePct === undefined) return undefined;
+    damageSource = { damage_from: "input", damage_pct: damagePct };
+    return pctToBps(damagePct);
+  };
 
   switch (terms.contract_type) {
     case "turnkey_profit_share":
@@ -153,6 +184,7 @@ contractsRoutes.post("/:id/settlement-preview", async (c) => {
       const body = parsed.data;
       let revenue = body.revenue_thb === undefined ? 0 : thbToSatang(body.revenue_thb);
       let periodMonths: number | undefined = (body as { period_months?: number | undefined }).period_months;
+      let damageBps = inputDamage(body.damage_pct);
       if (body.crop_cycle_id !== undefined) {
         const cycle = await cycleRevenue(body.crop_cycle_id);
         if (!cycle) return cycleNotInAsset();
@@ -161,8 +193,17 @@ contractsRoutes.post("/:id/settlement-preview", async (c) => {
         if (periodMonths === undefined && cycle.started_at !== null && cycle.ended_at !== null) {
           periodMonths = Math.ceil(Math.max(0, cycle.ended_at - cycle.started_at) / MONTH_MS);
         }
+        if (damageBps === undefined) {
+          // Same window and compounding as GET /api/crop-cycles/:id/disaster-impact.
+          const { events } = await cycleDisasterEvents(db, cycle);
+          if (events.length > 0) {
+            damageBps = combinedDamageBps(events.map((e) => e.damage_bps));
+            damageSource = { damage_from: "events", damage_pct: damageBps / 100, disaster_event_ids: events.map((e) => e.id) };
+          }
+        }
       }
       const opex = thbToSatang(body.opex_thb);
+      const disaster = disasterInput(damageBps, body);
       if (terms.contract_type === "turnkey_profit_share") {
         if (periodMonths === undefined) {
           return c.json(
@@ -170,28 +211,44 @@ contractsRoutes.post("/:id/settlement-preview", async (c) => {
             400,
           );
         }
-        input = { contract_type: terms.contract_type, revenue_satang: revenue, opex_satang: opex, period_months: periodMonths };
+        input = {
+          contract_type: terms.contract_type,
+          revenue_satang: revenue,
+          opex_satang: opex,
+          period_months: periodMonths,
+          ...(disaster && { disaster }),
+        };
       } else {
-        input = { contract_type: terms.contract_type, revenue_satang: revenue, opex_satang: opex };
+        input = { contract_type: terms.contract_type, revenue_satang: revenue, opex_satang: opex, ...(disaster && { disaster }) };
       }
       break;
     }
     case "pay_per_job": {
       const parsed = await parseBody(c, PayPerJobPreviewInput);
       if (!parsed.ok) return parsed.res;
+      const toHundredths = (j: { job_key: string; quantity: number }) => ({
+        job_key: j.job_key,
+        quantity_hundredths: Math.round(j.quantity * 100),
+      });
+      const disaster = disasterInput(inputDamage(parsed.data.damage_pct), parsed.data);
       input = {
         contract_type: terms.contract_type,
-        jobs: parsed.data.jobs.map((j) => ({ job_key: j.job_key, quantity_hundredths: Math.round(j.quantity * 100) })),
+        jobs: parsed.data.jobs.map(toHundredths),
+        ...(parsed.data.cancelled_jobs && { cancelled_jobs: parsed.data.cancelled_jobs.map(toHundredths) }),
+        ...(disaster && { disaster }),
       };
       break;
     }
     case "property_management": {
       const parsed = await parseBody(c, PropertyPreviewInput);
       if (!parsed.ok) return parsed.res;
+      const disaster = disasterInput(inputDamage(parsed.data.damage_pct), parsed.data);
       input = {
         contract_type: terms.contract_type,
         revenue_satang: thbToSatang(parsed.data.revenue_thb),
         turnovers: parsed.data.turnovers,
+        ...(parsed.data.repair_cost_thb !== undefined && { repair_cost_satang: thbToSatang(parsed.data.repair_cost_thb) }),
+        ...(disaster && { disaster }),
       };
       break;
     }
@@ -209,10 +266,12 @@ contractsRoutes.post("/:id/settlement-preview", async (c) => {
     contract_id: contract.id,
     contract_type: result.contract_type,
     rules_status: result.rules_status,
+    disaster_clause_applied: result.disaster_clause_applied,
+    inflows: result.inflows.map((i) => ({ key: i.key, label_th: i.label_th, amount_thb: satangToThb(i.amount_satang) })),
     lines: result.lines.map((l) => ({ key: l.key, label_th: l.label_th, amount_thb: satangToThb(l.amount_satang), party: l.party })),
     owner_payout_thb: satangToThb(result.owner_payout_satang),
     operator_payout_thb: satangToThb(result.operator_payout_satang),
     assumptions: result.assumptions,
-    source,
+    source: { ...source, ...damageSource },
   });
 });
