@@ -200,6 +200,22 @@ describe("weigh slip", () => {
     expect(list.harvest_logs[0]!.slip_uploaded).toBe(true);
   });
 
+  it("lets only one of two concurrent slip uploads win", async () => {
+    const { harvest_log, slip_upload_url } = await newLog();
+    const [a, b] = await Promise.all([
+      send("PUT", slip_upload_url, tinyJpeg(), "image/jpeg"),
+      send("PUT", slip_upload_url, tinyJpeg(), "image/jpeg"),
+    ]);
+    expect([a.status, b.status].sort()).toEqual([204, 409]);
+    const loser = a.status === 409 ? a : b;
+    expect(((await loser.json()) as { error: string }).error).toBe("slip_already_uploaded");
+    const row = await env.DB.prepare("SELECT slip_uploaded_at FROM farm_harvest_logs WHERE id = ?")
+      .bind(harvest_log.id)
+      .first<{ slip_uploaded_at: number | null }>();
+    expect(row!.slip_uploaded_at).not.toBeNull();
+    expect((await send("GET", slip_upload_url)).status).toBe(200);
+  });
+
   it("rejects the wrong content type (415), too large (413) and empty (400) uploads", async () => {
     const { slip_upload_url } = await newLog();
     expect((await send("PUT", slip_upload_url, "not an image", "text/plain")).status).toBe(415);

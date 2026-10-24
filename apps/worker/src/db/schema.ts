@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { check, index, integer, real, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import { check, index, integer, real, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 // Enum values mirror @owner-os/shared (checked in test/schema.test.ts); not imported to keep the schema standalone.
 // Timestamps are integer epoch milliseconds; GeoJSON is stored as text.
@@ -124,6 +124,34 @@ export const farm_harvest_logs = sqliteTable(
   ],
 );
 
+export const CONTRACT_TYPES = ["turnkey_profit_share", "pay_per_job", "property_management", "fixed_target_bonus"] as const;
+export const RULES_STATUSES = ["draft_unconfirmed", "confirmed"] as const;
+
+// Owner ↔ operator agreement (migration 0004). terms_json stores money in satang and percentages in
+// basis points (integers); the API converts to baht / percent. At most one active contract per asset.
+export const asset_contracts = sqliteTable(
+  "asset_contracts",
+  {
+    id: text("id").primaryKey(),
+    asset_id: text("asset_id")
+      .notNull()
+      .references(() => assets.id),
+    contract_type: text("contract_type", { enum: CONTRACT_TYPES }).notNull(),
+    partner_label: text("partner_label").notNull(),
+    terms_json: text("terms_json").notNull(),
+    is_active: integer("is_active", { mode: "boolean" }).notNull(),
+    rules_status: text("rules_status", { enum: RULES_STATUSES }).notNull().default("draft_unconfirmed"),
+    starts_at: integer("starts_at").notNull(),
+    ends_at: integer("ends_at"),
+    created_at: integer("created_at").notNull(),
+    deactivated_at: integer("deactivated_at"),
+  },
+  (t) => [
+    index("asset_contracts_asset_id_idx").on(t.asset_id),
+    uniqueIndex("asset_contracts_one_active_per_asset").on(t.asset_id).where(sql`${t.is_active} = 1`),
+  ],
+);
+
 export type Asset = typeof assets.$inferSelect;
 export type NewAsset = typeof assets.$inferInsert;
 export type AssetUnit = typeof asset_units.$inferSelect;
@@ -136,3 +164,5 @@ export type FarmCropCycle = typeof farm_crop_cycles.$inferSelect;
 export type NewFarmCropCycle = typeof farm_crop_cycles.$inferInsert;
 export type FarmHarvestLog = typeof farm_harvest_logs.$inferSelect;
 export type NewFarmHarvestLog = typeof farm_harvest_logs.$inferInsert;
+export type AssetContract = typeof asset_contracts.$inferSelect;
+export type NewAssetContract = typeof asset_contracts.$inferInsert;

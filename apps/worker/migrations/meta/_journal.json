@@ -29,6 +29,13 @@
       "when": 1792843432601,
       "tag": "0003_harvest_logs",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1792846020739,
+      "tag": "0004_asset_contracts",
+      "breakpoints": true
     }
   ]
 }

@@ -30,6 +30,7 @@ describe("planDemoSeed (--dry-run)", () => {
   it("plans every request without writing anything", async () => {
     const steps = planDemoSeed(fixture);
     expect(steps.filter((s) => s.path === "/api/assets")).toHaveLength(4);
+    expect(steps.filter((s) => s.path.endsWith("/contracts"))).toHaveLength(4);
     expect(steps.filter((s) => s.path.endsWith("/units"))).toHaveLength(4);
     expect(steps.filter((s) => s.path.endsWith("/work-orders"))).toHaveLength(5);
     expect(steps.filter((s) => s.path.endsWith("/complete"))).toHaveLength(3);
@@ -46,7 +47,7 @@ describe("seedDemo through the API on local D1/R2", () => {
   }, 30_000);
 
   it("reports a clean summary", () => {
-    expect(summary).toEqual({ assets: 4, units: 4, work_orders: 5, submitted: 3, failures: [] });
+    expect(summary).toEqual({ assets: 4, contracts: 4, units: 4, work_orders: 5, submitted: 3, failures: [] });
   });
 
   it("creates 4 assets and 4 units with server-computed area", async () => {
@@ -72,6 +73,27 @@ describe("seedDemo through the API on local D1/R2", () => {
     }
   });
 
+  it("creates one active draft contract per asset with the team's terms", async () => {
+    expect(await countRows("asset_contracts", "is_active = 1 AND rules_status = 'draft_unconfirmed'")).toBe(4);
+    const rows = await env.DB.prepare(
+      "SELECT a.name, c.contract_type, c.partner_label, c.terms_json FROM asset_contracts c JOIN assets a ON a.id = c.asset_id",
+    ).all<{ name: string; contract_type: string; partner_label: string; terms_json: string }>();
+    const byType = Object.fromEntries(rows.results.map((r) => [r.contract_type, { ...r, terms: JSON.parse(r.terms_json) }]));
+    expect(Object.keys(byType).sort()).toEqual(["fixed_target_bonus", "pay_per_job", "property_management", "turnkey_profit_share"]);
+    expect(byType.fixed_target_bonus!.terms).toMatchObject({ owner_target_revenue_satang: 35_000_000, excess_operator_bps: 10_000, opex_borne_by: "operator" });
+    expect(byType.pay_per_job!.terms.rates.map((r: { job_key: string; rate_satang: number }) => [r.job_key, r.rate_satang])).toEqual([
+      ["drone_spray", 12_000],
+      ["harvester", 45_000],
+    ]);
+    expect(byType.turnkey_profit_share!.terms).toMatchObject({ owner_share_bps: 7000, operator_share_bps: 3000, management_retainer_monthly_satang: 500_000 });
+    expect(byType.property_management!.terms).toEqual({
+      contract_type: "property_management",
+      revenue_commission_bps: 1500,
+      cleaning_fee_per_turnover_satang: 80_000,
+    });
+    for (const r of rows.results) expect(r.partner_label).toMatch(/\(demo\)$/);
+  });
+
   it("does not load the milestone 4 reference data", async () => {
     expect(await countRows("farm_crop_cycles")).toBe(0);
   });
@@ -88,7 +110,7 @@ describe("seedDemo failure handling", () => {
       { token: "wrong-token", fixture },
     );
     expect(calls).toBe(1);
-    expect(result).toMatchObject({ assets: 0, units: 0, work_orders: 0, submitted: 0 });
+    expect(result).toMatchObject({ assets: 0, contracts: 0, units: 0, work_orders: 0, submitted: 0 });
     expect(result.failures).toEqual([{ path: "/api/assets", status: 401, error: "unauthorized" }]);
   });
 

@@ -1,10 +1,15 @@
 // Row -> API mappers, one per entity. API layer: ISO-8601 strings, GeoJSON objects, snake_case.
 // Add future fields (owner, assignee, cost, …) here so every route picks them up.
 import {
+  bpsToPct,
   gToKg,
+  pctToBps,
   satangToThb,
+  thbToSatang,
   type Asset,
   type AssetUnit,
+  type Contract,
+  type ContractTerms,
   type CropCycle,
   type Evidence,
   type HarvestLog,
@@ -12,6 +17,7 @@ import {
   type WorkOrder,
 } from "@owner-os/shared";
 import type {
+  asset_contracts,
   asset_units,
   assets,
   farm_crop_cycles,
@@ -26,6 +32,7 @@ export type WorkOrderRow = typeof work_orders.$inferSelect;
 export type EvidenceRow = typeof work_order_evidence.$inferSelect;
 export type CropCycleRow = typeof farm_crop_cycles.$inferSelect;
 export type HarvestLogRow = typeof farm_harvest_logs.$inferSelect;
+export type ContractRow = typeof asset_contracts.$inferSelect;
 
 /** Evidence as stored: location/geofence fields stay null until the work order is completed with it. */
 export type EvidenceApi = {
@@ -111,6 +118,114 @@ export function harvestLogToApi(row: HarvestLogRow): HarvestLog {
     buyer_name: row.buyer_name,
     note: row.note,
     slip_uploaded: row.slip_uploaded_at !== null,
+    created_at: toIso(row.created_at),
+  };
+}
+
+/** Contract terms as stored in asset_contracts.terms_json: satang and basis points (integers). */
+export type StoredContractTerms =
+  | {
+      contract_type: "turnkey_profit_share";
+      owner_share_bps: number;
+      operator_share_bps: number;
+      management_retainer_monthly_satang: number;
+      retainer_timing: "before_split" | "after_split";
+      loss_policy: "owner_absorbs" | "split_by_share";
+    }
+  | {
+      contract_type: "pay_per_job";
+      rates: { job_key: string; label: string; unit: "rai" | "job" | "hour"; rate_satang: number }[];
+    }
+  | {
+      contract_type: "property_management";
+      revenue_commission_bps: number;
+      cleaning_fee_per_turnover_satang: number;
+    }
+  | {
+      contract_type: "fixed_target_bonus";
+      owner_target_revenue_satang: number;
+      excess_operator_bps: number;
+      opex_borne_by: "operator" | "owner";
+      shortfall_policy: "owner_absorbs" | "operator_covers";
+    };
+
+export function contractTermsToStored(t: ContractTerms): StoredContractTerms {
+  switch (t.contract_type) {
+    case "turnkey_profit_share":
+      return {
+        contract_type: t.contract_type,
+        owner_share_bps: pctToBps(t.owner_share_pct),
+        operator_share_bps: pctToBps(t.operator_share_pct),
+        management_retainer_monthly_satang: thbToSatang(t.management_retainer_monthly_thb),
+        retainer_timing: t.retainer_timing,
+        loss_policy: t.loss_policy,
+      };
+    case "pay_per_job":
+      return {
+        contract_type: t.contract_type,
+        rates: t.rates.map((r) => ({ job_key: r.job_key, label: r.label, unit: r.unit, rate_satang: thbToSatang(r.rate_thb) })),
+      };
+    case "property_management":
+      return {
+        contract_type: t.contract_type,
+        revenue_commission_bps: pctToBps(t.revenue_commission_pct),
+        cleaning_fee_per_turnover_satang: thbToSatang(t.cleaning_fee_per_turnover_thb),
+      };
+    case "fixed_target_bonus":
+      return {
+        contract_type: t.contract_type,
+        owner_target_revenue_satang: thbToSatang(t.owner_target_revenue_thb),
+        excess_operator_bps: pctToBps(t.excess_operator_pct),
+        opex_borne_by: t.opex_borne_by,
+        shortfall_policy: t.shortfall_policy,
+      };
+  }
+}
+
+export function contractTermsFromStored(s: StoredContractTerms): ContractTerms {
+  switch (s.contract_type) {
+    case "turnkey_profit_share":
+      return {
+        contract_type: s.contract_type,
+        owner_share_pct: bpsToPct(s.owner_share_bps),
+        operator_share_pct: bpsToPct(s.operator_share_bps),
+        management_retainer_monthly_thb: satangToThb(s.management_retainer_monthly_satang),
+        retainer_timing: s.retainer_timing,
+        loss_policy: s.loss_policy,
+      };
+    case "pay_per_job":
+      return {
+        contract_type: s.contract_type,
+        rates: s.rates.map((r) => ({ job_key: r.job_key, label: r.label, unit: r.unit, rate_thb: satangToThb(r.rate_satang) })),
+      };
+    case "property_management":
+      return {
+        contract_type: s.contract_type,
+        revenue_commission_pct: bpsToPct(s.revenue_commission_bps),
+        cleaning_fee_per_turnover_thb: satangToThb(s.cleaning_fee_per_turnover_satang),
+      };
+    case "fixed_target_bonus":
+      return {
+        contract_type: s.contract_type,
+        owner_target_revenue_thb: satangToThb(s.owner_target_revenue_satang),
+        excess_operator_pct: bpsToPct(s.excess_operator_bps),
+        opex_borne_by: s.opex_borne_by,
+        shortfall_policy: s.shortfall_policy,
+      };
+  }
+}
+
+export function contractToApi(row: ContractRow): Contract {
+  return {
+    id: row.id,
+    asset_id: row.asset_id,
+    contract_type: row.contract_type,
+    partner_label: row.partner_label,
+    terms: contractTermsFromStored(JSON.parse(row.terms_json) as StoredContractTerms),
+    is_active: row.is_active,
+    rules_status: row.rules_status,
+    starts_at: toIso(row.starts_at),
+    ends_at: toIsoOrNull(row.ends_at),
     created_at: toIso(row.created_at),
   };
 }

@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { requireApiToken } from "./auth";
 import type { Env } from "./env";
 import { assetsRoutes } from "./routes/assets";
+import { assetContractsRoutes, contractsRoutes } from "./routes/contracts";
 import { cropCyclesRoutes, cropTemplatesRoutes, unitCropCyclesRoutes } from "./routes/crop-cycles";
 import { evidenceRoutes } from "./routes/evidence";
 import { cycleHarvestLogsRoutes, harvestLogsRoutes } from "./routes/harvest-logs";
@@ -30,5 +31,7 @@ app.route("/api/crop-cycles", cropCyclesRoutes);
 app.route("/api/crop-templates", cropTemplatesRoutes);
 app.route("/api/crop-cycles", cycleHarvestLogsRoutes);
 app.route("/api/harvest-logs", harvestLogsRoutes);
+app.route("/api/assets", assetContractsRoutes);
+app.route("/api/contracts", contractsRoutes);
 
 export default app;

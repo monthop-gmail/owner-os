@@ -1,7 +1,7 @@
 // Demo seed that goes through our own API (validation, server-side area, real geofence check),
-// instead of loading SQL directly. Only `assets` from the fixture are loaded; `milestone4_not_loaded`
-// is reference data for Milestone 4 and is ignored on purpose.
-import type { AssetKind, AssetUnitType, Polygon } from "@owner-os/shared";
+// instead of loading SQL directly. Only `assets` from the fixture are loaded (with their contract, whose
+// rules are draft_unconfirmed); `milestone4_not_loaded` is reference data and is ignored on purpose.
+import type { AssetKind, AssetUnitType, CreateContractInput, Polygon } from "@owner-os/shared";
 
 export type DemoProof = { lat: number; lng: number; accuracy_m: number };
 export type DemoWorkOrder = { title: string; unit: string; proof?: DemoProof };
@@ -10,6 +10,7 @@ export type DemoAsset = {
   key: string;
   name: string;
   kind: AssetKind;
+  contract?: CreateContractInput;
   units: DemoUnit[];
   work_orders: DemoWorkOrder[];
 };
@@ -20,6 +21,7 @@ export type FetchFn = (path: string, init: RequestInit) => Response | Promise<Re
 export type SeedFailure = { path: string; status: number; error: string };
 export type SeedSummary = {
   assets: number;
+  contracts: number;
   units: number;
   work_orders: number;
   submitted: number;
@@ -55,6 +57,13 @@ export function planDemoSeed(fixture: DemoFixture): PlanStep[] {
   const steps: PlanStep[] = [];
   for (const asset of fixture.assets) {
     steps.push({ method: "POST", path: "/api/assets", description: `asset "${asset.name}" (${asset.kind})` });
+    if (asset.contract) {
+      steps.push({
+        method: "POST",
+        path: `/api/assets/<${asset.key}>/contracts`,
+        description: `contract ${asset.contract.terms.contract_type} with "${asset.contract.partner_label}" (draft_unconfirmed)`,
+      });
+    }
     for (const unit of asset.units) {
       steps.push({
         method: "POST",
@@ -98,7 +107,7 @@ export async function seedDemo(
   fetchFn: FetchFn,
   opts: { token: string; fixture: DemoFixture; now?: Date },
 ): Promise<SeedSummary> {
-  const summary: SeedSummary = { assets: 0, units: 0, work_orders: 0, submitted: 0, failures: [] };
+  const summary: SeedSummary = { assets: 0, contracts: 0, units: 0, work_orders: 0, submitted: 0, failures: [] };
   const auth = { authorization: `Bearer ${opts.token}` };
   const capturedAt = (opts.now ?? new Date()).toISOString();
 
@@ -124,6 +133,11 @@ export async function seedDemo(
     for (const asset of opts.fixture.assets) {
       const created = await send<{ id: string }>("POST", "/api/assets", json({ name: asset.name, kind: asset.kind }));
       summary.assets++;
+
+      if (asset.contract) {
+        await send("POST", `/api/assets/${created.id}/contracts`, json(asset.contract));
+        summary.contracts++;
+      }
 
       const unitIds = new Map<string, string>();
       for (const unit of asset.units) {

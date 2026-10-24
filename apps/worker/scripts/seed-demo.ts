@@ -29,7 +29,7 @@ if (!baseUrl || !token) {
 
 const summary = await seedDemo((path, init) => fetch(baseUrl + path, init), { token, fixture, now: new Date() });
 console.log(
-  `assets ${summary.assets} · units ${summary.units} · work orders ${summary.work_orders} · submitted ${summary.submitted}`,
+  `assets ${summary.assets} · contracts ${summary.contracts} · units ${summary.units} · work orders ${summary.work_orders} · submitted ${summary.submitted}`,
 );
 if (summary.failures.length > 0) {
   for (const f of summary.failures) console.error(`FAILED ${f.path} -> ${f.status} ${f.error}`);
