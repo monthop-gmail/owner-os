@@ -1,4 +1,5 @@
-import { index, integer, real, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import { sql } from "drizzle-orm";
+import { check, index, integer, real, sqliteTable, text } from "drizzle-orm/sqlite-core";
 
 // Enum values mirror @owner-os/shared (checked in test/schema.test.ts); not imported to keep the schema standalone.
 // Timestamps are integer epoch milliseconds; GeoJSON is stored as text.
@@ -97,6 +98,32 @@ export const farm_crop_cycles = sqliteTable(
   (t) => [index("farm_crop_cycles_unit_id_idx").on(t.unit_id)],
 );
 
+// Weight in grams and money in satang (integers); the API converts to kg / baht (migration 0003).
+export const farm_harvest_logs = sqliteTable(
+  "farm_harvest_logs",
+  {
+    id: text("id").primaryKey(),
+    crop_cycle_id: text("crop_cycle_id")
+      .notNull()
+      .references(() => farm_crop_cycles.id),
+    harvested_at: integer("harvested_at").notNull(),
+    weight_g: integer("weight_g").notNull(),
+    unit_price_satang: integer("unit_price_satang").notNull(),
+    revenue_satang: integer("revenue_satang").notNull(),
+    buyer_name: text("buyer_name"),
+    slip_r2_key: text("slip_r2_key").notNull().unique(),
+    slip_uploaded_at: integer("slip_uploaded_at"),
+    note: text("note"),
+    created_at: integer("created_at").notNull(),
+  },
+  (t) => [
+    index("farm_harvest_logs_crop_cycle_id_idx").on(t.crop_cycle_id),
+    check("farm_harvest_logs_weight_g_positive", sql`${t.weight_g} > 0`),
+    check("farm_harvest_logs_unit_price_non_negative", sql`${t.unit_price_satang} >= 0`),
+    check("farm_harvest_logs_revenue_non_negative", sql`${t.revenue_satang} >= 0`),
+  ],
+);
+
 export type Asset = typeof assets.$inferSelect;
 export type NewAsset = typeof assets.$inferInsert;
 export type AssetUnit = typeof asset_units.$inferSelect;
@@ -107,3 +134,5 @@ export type WorkOrderEvidence = typeof work_order_evidence.$inferSelect;
 export type NewWorkOrderEvidence = typeof work_order_evidence.$inferInsert;
 export type FarmCropCycle = typeof farm_crop_cycles.$inferSelect;
 export type NewFarmCropCycle = typeof farm_crop_cycles.$inferInsert;
+export type FarmHarvestLog = typeof farm_harvest_logs.$inferSelect;
+export type NewFarmHarvestLog = typeof farm_harvest_logs.$inferInsert;

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { TemplateKey } from "./crop-templates";
 import { LatSchema, LngSchema, PolygonSchema } from "./geo";
+import { hasAtMostDecimals } from "./money";
 
 // Field names are snake_case to match the D1 columns (Task 1.4).
 
@@ -71,6 +72,24 @@ export function canTransition(from: CropCycleStatus, to: CropCycleStatus): boole
   return CROP_CYCLE_TRANSITIONS[from].includes(to);
 }
 
+/** Harvest log in readable units; stored as grams / satang (see money.ts). */
+export const HarvestLogSchema = z.object({
+  id: IdSchema,
+  crop_cycle_id: IdSchema,
+  harvested_at: IsoDateTimeSchema,
+  weight_kg: z.number().positive(),
+  unit_price_thb: z.number().min(0),
+  revenue_thb: z.number().min(0),
+  buyer_name: z.string().nullable(),
+  note: z.string().nullable(),
+  slip_uploaded: z.boolean(),
+  created_at: IsoDateTimeSchema,
+});
+
+export const MAX_HARVEST_WEIGHT_KG = 1_000_000;
+/** Cap so weight × price stays exact in integer satang. */
+export const MAX_UNIT_PRICE_THB = 100_000;
+
 export const EvidenceSchema = z.object({
   id: IdSchema,
   work_order_id: IdSchema,
@@ -119,6 +138,23 @@ export const CreateCropCycleInput = z.strictObject({
   template_key: TemplateKey.optional(),
 });
 
+/** Revenue is always computed by the server, so it is not accepted here (strict). */
+export const CreateHarvestLogInput = z.strictObject({
+  harvested_at: IsoDateTimeSchema,
+  weight_kg: z
+    .number()
+    .positive()
+    .max(MAX_HARVEST_WEIGHT_KG)
+    .refine((v) => hasAtMostDecimals(v, 3), "weight_kg: at most 3 decimal places"),
+  unit_price_thb: z
+    .number()
+    .min(0)
+    .max(MAX_UNIT_PRICE_THB)
+    .refine((v) => hasAtMostDecimals(v, 2), "unit_price_thb: at most 2 decimal places"),
+  buyer_name: z.string().min(1).max(200).optional(),
+  note: z.string().min(1).max(1000).optional(),
+});
+
 export const TransitionCropCycleInput = z.strictObject({
   to: CropCycleStatus,
 });
@@ -138,3 +174,5 @@ export type CreateWorkOrderInput = z.infer<typeof CreateWorkOrderInput>;
 export type CropCycle = z.infer<typeof CropCycleSchema>;
 export type CreateCropCycleInput = z.infer<typeof CreateCropCycleInput>;
 export type TransitionCropCycleInput = z.infer<typeof TransitionCropCycleInput>;
+export type HarvestLog = z.infer<typeof HarvestLogSchema>;
+export type CreateHarvestLogInput = z.infer<typeof CreateHarvestLogInput>;

@@ -1,13 +1,31 @@
 // Row -> API mappers, one per entity. API layer: ISO-8601 strings, GeoJSON objects, snake_case.
 // Add future fields (owner, assignee, cost, …) here so every route picks them up.
-import type { Asset, AssetUnit, CropCycle, Evidence, Polygon, WorkOrder } from "@owner-os/shared";
-import type { asset_units, assets, farm_crop_cycles, work_order_evidence, work_orders } from "./db/schema";
+import {
+  gToKg,
+  satangToThb,
+  type Asset,
+  type AssetUnit,
+  type CropCycle,
+  type Evidence,
+  type HarvestLog,
+  type Polygon,
+  type WorkOrder,
+} from "@owner-os/shared";
+import type {
+  asset_units,
+  assets,
+  farm_crop_cycles,
+  farm_harvest_logs,
+  work_order_evidence,
+  work_orders,
+} from "./db/schema";
 
 export type AssetRow = typeof assets.$inferSelect;
 export type AssetUnitRow = typeof asset_units.$inferSelect;
 export type WorkOrderRow = typeof work_orders.$inferSelect;
 export type EvidenceRow = typeof work_order_evidence.$inferSelect;
 export type CropCycleRow = typeof farm_crop_cycles.$inferSelect;
+export type HarvestLogRow = typeof farm_harvest_logs.$inferSelect;
 
 /** Evidence as stored: location/geofence fields stay null until the work order is completed with it. */
 export type EvidenceApi = {
@@ -78,6 +96,21 @@ export function cropCycleToApi(row: CropCycleRow): CropCycle {
     started_at: toIsoOrNull(row.started_at),
     expected_harvest_at: toIsoOrNull(row.expected_harvest_at),
     ended_at: toIsoOrNull(row.ended_at),
+    created_at: toIso(row.created_at),
+  };
+}
+
+export function harvestLogToApi(row: HarvestLogRow): HarvestLog {
+  return {
+    id: row.id,
+    crop_cycle_id: row.crop_cycle_id,
+    harvested_at: toIso(row.harvested_at),
+    weight_kg: gToKg(row.weight_g),
+    unit_price_thb: satangToThb(row.unit_price_satang),
+    revenue_thb: satangToThb(row.revenue_satang),
+    buyer_name: row.buyer_name,
+    note: row.note,
+    slip_uploaded: row.slip_uploaded_at !== null,
     created_at: toIso(row.created_at),
   };
 }

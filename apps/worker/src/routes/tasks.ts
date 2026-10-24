@@ -9,10 +9,10 @@ import { evidenceToApi, toIso, workOrderToApi } from "../mappers";
 
 type AppContext = Context<{ Bindings: Env }>;
 
-const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
+export const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
 const MAX_ACCURACY_M = 100;
 const GEOFENCE_BUFFER_M = 15;
-const IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
+export const IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
 const ACTIVE_STATUSES = ["open", "in_progress"] as const;
 export const MAX_EVIDENCE_PER_WORK_ORDER = 20;
 const CAPTURED_AT_MAX_FUTURE_MS = 5 * 60 * 1000;
