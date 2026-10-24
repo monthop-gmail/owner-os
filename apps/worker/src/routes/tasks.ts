@@ -1,5 +1,5 @@
 import { CompleteWorkOrderInput, type Evidence, type Polygon, type WorkOrder } from "@owner-os/shared";
-import { and, count, eq, exists, inArray, isNull } from "drizzle-orm";
+import { and, count, eq, exists, inArray, isNotNull, isNull, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/d1";
 import { Hono, type Context } from "hono";
 import { asset_units, assets, work_order_evidence, work_orders } from "../db/schema";
@@ -23,6 +23,19 @@ const toIso = (ms: number): string => new Date(ms).toISOString();
 const isActive = (status: string): boolean => (ACTIVE_STATUSES as readonly string[]).includes(status);
 
 type Db = ReturnType<typeof drizzle>;
+
+/** Uploaded evidence counts against the per-work-order quota; pending tickets do not. */
+async function uploadedEvidenceCount(db: Db, woId: string): Promise<number> {
+  const [row] = await db
+    .select({ n: count() })
+    .from(work_order_evidence)
+    .where(and(eq(work_order_evidence.work_order_id, woId), isNotNull(work_order_evidence.uploaded_at)));
+  return row?.n ?? 0;
+}
+
+/** SQL condition "work order <id> still has quota left", evaluated inside the same statement. */
+const hasEvidenceQuota = (woId: string) =>
+  sql`(SELECT COUNT(*) FROM ${work_order_evidence} WHERE ${work_order_evidence.work_order_id} = ${woId} AND ${work_order_evidence.uploaded_at} IS NOT NULL) < ${MAX_EVIDENCE_PER_WORK_ORDER}`;
 
 /** SQL condition "work order <id> is still open/in_progress", evaluated inside the same statement. */
 const workOrderIsActive = (db: Db, woId: string) =>
@@ -80,6 +93,7 @@ const woNotFound = (c: AppContext) => c.json({ error: "work_order_not_found" }, 
 const evidenceNotFound = (c: AppContext) => c.json({ error: "evidence_not_found" }, 404);
 const notActive = (c: AppContext) => c.json({ error: "work_order_not_active" }, 409);
 const alreadyUploaded = (c: AppContext) => c.json({ error: "evidence_already_uploaded" }, 409);
+const evidenceLimit = (c: AppContext) => c.json({ error: "evidence_limit" }, 409);
 
 export const tasksRoutes = new Hono<{ Bindings: Env }>();
 
@@ -90,11 +104,7 @@ tasksRoutes.post("/:id/upload-ticket", async (c) => {
   if (!isActive(wo.status)) return notActive(c);
 
   const db = drizzle(c.env.DB);
-  const [existing] = await db
-    .select({ n: count() })
-    .from(work_order_evidence)
-    .where(eq(work_order_evidence.work_order_id, woId));
-  if ((existing?.n ?? 0) >= MAX_EVIDENCE_PER_WORK_ORDER) return c.json({ error: "evidence_limit" }, 429);
+  if ((await uploadedEvidenceCount(db, woId)) >= MAX_EVIDENCE_PER_WORK_ORDER) return evidenceLimit(c);
 
   const evidenceId = crypto.randomUUID();
   await db
@@ -127,7 +137,8 @@ tasksRoutes.put("/:id/evidence/:evidenceId", async (c) => {
   if (bytes.byteLength === 0) return c.json({ error: "empty_body" }, 400);
   if (bytes.byteLength > MAX_UPLOAD_BYTES) return c.json({ error: "payload_too_large" }, 413);
 
-  // Reserve the slot atomically before writing to R2 so concurrent uploads cannot both succeed.
+  // Reserve the slot atomically before writing to R2 so concurrent uploads cannot both succeed
+  // and cannot push the work order past its evidence quota.
   const db = drizzle(c.env.DB);
   const reserved = await db
     .update(work_order_evidence)
@@ -137,10 +148,14 @@ tasksRoutes.put("/:id/evidence/:evidenceId", async (c) => {
         eq(work_order_evidence.id, evidence.id),
         isNull(work_order_evidence.uploaded_at),
         workOrderIsActive(db, woId),
+        hasEvidenceQuota(woId),
       ),
     )
     .returning({ id: work_order_evidence.id });
-  if (reserved.length !== 1) return alreadyUploaded(c);
+  if (reserved.length !== 1) {
+    if ((await uploadedEvidenceCount(db, woId)) >= MAX_EVIDENCE_PER_WORK_ORDER) return evidenceLimit(c);
+    return alreadyUploaded(c);
+  }
 
   try {
     await c.env.BUCKET.put(evidence.r2_key, bytes, { httpMetadata: { contentType } });

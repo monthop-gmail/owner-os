@@ -190,17 +190,49 @@ describe("PUT evidence on an inactive work order", () => {
 });
 
 describe("evidence limit", () => {
-  it(`allows ${MAX_EVIDENCE_PER_WORK_ORDER} tickets per work order and rejects the next with 429`, async () => {
+  it("does not count pending tickets against the quota", async () => {
+    const { wo } = await setup();
+    for (let i = 0; i < 25; i++) await ticket(wo.id);
+    expect((await request("POST", `/api/tasks/${wo.id}/upload-ticket`)).status).toBe(201);
+  }, 30_000);
+
+  it(`rejects the next ticket and upload with 409 once ${MAX_EVIDENCE_PER_WORK_ORDER} are uploaded`, async () => {
     expect(MAX_EVIDENCE_PER_WORK_ORDER).toBe(20);
     const { wo } = await setup();
-    for (let i = 0; i < MAX_EVIDENCE_PER_WORK_ORDER; i++) {
-      expect((await request("POST", `/api/tasks/${wo.id}/upload-ticket`)).status).toBe(201);
-    }
-    const body = await json<{ error: string }>(await request("POST", `/api/tasks/${wo.id}/upload-ticket`), 429);
+    const spare = await ticket(wo.id);
+    for (let i = 0; i < MAX_EVIDENCE_PER_WORK_ORDER; i++) await ticketAndUpload(wo.id);
+
+    const body = await json<{ error: string }>(await request("POST", `/api/tasks/${wo.id}/upload-ticket`), 409);
     expect(body.error).toBe("evidence_limit");
+    // A ticket issued before the quota filled up cannot be used to exceed it either.
+    const late = await json<{ error: string }>(await request("PUT", spare.upload_url, FAKE_JPEG, "image/jpeg"), 409);
+    expect(late.error).toBe("evidence_limit");
 
     const other = await setup();
     expect((await request("POST", `/api/tasks/${other.wo.id}/upload-ticket`)).status).toBe(201);
+  }, 30_000);
+});
+
+describe("upload rollback", () => {
+  it("clears uploaded_at when BUCKET.put throws, and a retry with a working bucket succeeds", async () => {
+    const { wo } = await setup();
+    const t = await ticket(wo.id);
+    const failingBucket = {
+      put: () => Promise.reject(new Error("simulated R2 failure")),
+    } as unknown as R2Bucket;
+    const failed = await app.request(
+      t.upload_url,
+      { method: "PUT", headers: { ...authHeader, "content-type": "image/jpeg" }, body: FAKE_JPEG },
+      { ...env, BUCKET: failingBucket },
+    );
+    expect(failed.status).toBe(500);
+    const row = await env.DB.prepare("SELECT uploaded_at FROM work_order_evidence WHERE id = ?")
+      .bind(t.evidence_id)
+      .first();
+    expect(row).toEqual({ uploaded_at: null });
+
+    expect((await request("PUT", t.upload_url, FAKE_JPEG, "image/jpeg")).status).toBe(204);
+    expect(await env.BUCKET.head(`work-orders/${wo.id}/${t.evidence_id}`)).not.toBeNull();
   });
 });
 
