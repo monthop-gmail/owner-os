@@ -3,22 +3,17 @@ import {
   CreateAssetInput,
   CreateAssetUnitInput,
   CreateWorkOrderInput,
+  WorkOrderStatus,
   type Asset,
-  type AssetUnit,
-  type Polygon,
-  type WorkOrder,
 } from "@owner-os/shared";
-import { and, eq } from "drizzle-orm";
+import { and, count, desc, eq, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/d1";
 import { Hono, type Context } from "hono";
 import { asset_units, assets, work_orders } from "../db/schema";
 import type { Env } from "../env";
+import { assetToApi, toMs, unitToApi, workOrderToApi } from "../mappers";
 
 type AppContext = Context<{ Bindings: Env }>;
-
-// API layer uses ISO-8601 strings; D1 stores integer epoch ms.
-const toIso = (ms: number): string => new Date(ms).toISOString();
-const toMs = (iso: string): number => Date.parse(iso);
 
 type Parsed<T> = { ok: true; data: T } | { ok: false; res: Response };
 type SafeParser<T> = {
@@ -39,40 +34,6 @@ async function parseBody<T>(c: AppContext, schema: SafeParser<T>): Promise<Parse
   return { ok: true, data: result.data };
 }
 
-function assetToApi(row: typeof assets.$inferSelect): Asset {
-  return {
-    id: row.id,
-    name: row.name,
-    kind: row.kind,
-    boundary: row.boundary_geojson === null ? null : (JSON.parse(row.boundary_geojson) as Polygon),
-    created_at: toIso(row.created_at),
-  };
-}
-
-function unitToApi(row: typeof asset_units.$inferSelect): AssetUnit {
-  return {
-    id: row.id,
-    asset_id: row.asset_id,
-    name: row.name,
-    unit_type: row.unit_type,
-    boundary: JSON.parse(row.boundary_geojson) as Polygon,
-    area_m2: row.area_m2,
-    created_at: toIso(row.created_at),
-  };
-}
-
-function workOrderToApi(row: typeof work_orders.$inferSelect): WorkOrder {
-  return {
-    id: row.id,
-    asset_id: row.asset_id,
-    unit_id: row.unit_id,
-    title: row.title,
-    status: row.status,
-    due_at: row.due_at === null ? null : toIso(row.due_at),
-    created_at: toIso(row.created_at),
-  };
-}
-
 async function assetExists(c: AppContext, id: string): Promise<boolean> {
   const row = await drizzle(c.env.DB).select({ id: assets.id }).from(assets).where(eq(assets.id, id)).get();
   return row !== undefined;
@@ -81,6 +42,73 @@ async function assetExists(c: AppContext, id: string): Promise<boolean> {
 const notFound = (c: AppContext) => c.json({ error: "asset_not_found" }, 404);
 
 export const assetsRoutes = new Hono<{ Bindings: Env }>();
+
+type WorkOrderCounts = Record<WorkOrderStatus, number>;
+const zeroCounts = (): WorkOrderCounts =>
+  Object.fromEntries(WorkOrderStatus.options.map((s) => [s, 0])) as WorkOrderCounts;
+
+// Newest first; rowid breaks ties between rows created in the same millisecond.
+const newestAssets = [desc(assets.created_at), desc(sql`${assets}.rowid`)];
+const newestUnits = [desc(asset_units.created_at), desc(sql`${asset_units}.rowid`)];
+const newestWorkOrders = [desc(work_orders.created_at), desc(sql`${work_orders}.rowid`)];
+
+assetsRoutes.get("/", async (c) => {
+  const db = drizzle(c.env.DB);
+  // Three queries in one round trip; counts come from GROUP BY, not per-asset queries.
+  const [rows, unitCounts, woCounts] = await db.batch([
+    db.select().from(assets).orderBy(...newestAssets),
+    db.select({ asset_id: asset_units.asset_id, n: count() }).from(asset_units).groupBy(asset_units.asset_id),
+    db
+      .select({ asset_id: work_orders.asset_id, status: work_orders.status, n: count() })
+      .from(work_orders)
+      .groupBy(work_orders.asset_id, work_orders.status),
+  ]);
+
+  const unitsByAsset = new Map(unitCounts.map((r) => [r.asset_id, r.n]));
+  const woByAsset = new Map<string, WorkOrderCounts>();
+  for (const r of woCounts) {
+    const counts = woByAsset.get(r.asset_id) ?? zeroCounts();
+    counts[r.status] = r.n;
+    woByAsset.set(r.asset_id, counts);
+  }
+
+  const list: (Asset & { unit_count: number; work_order_counts: WorkOrderCounts })[] = rows.map((row) => ({
+    ...assetToApi(row),
+    unit_count: unitsByAsset.get(row.id) ?? 0,
+    work_order_counts: woByAsset.get(row.id) ?? zeroCounts(),
+  }));
+  return c.json({ assets: list });
+});
+
+assetsRoutes.get("/:id", async (c) => {
+  const db = drizzle(c.env.DB);
+  const assetId = c.req.param("id");
+  const [assetRows, unitRows] = await db.batch([
+    db.select().from(assets).where(eq(assets.id, assetId)),
+    db.select().from(asset_units).where(eq(asset_units.asset_id, assetId)).orderBy(...newestUnits),
+  ]);
+  const asset = assetRows[0];
+  if (!asset) return notFound(c);
+  return c.json({ asset: assetToApi(asset), units: unitRows.map(unitToApi) });
+});
+
+assetsRoutes.get("/:id/work-orders", async (c) => {
+  const assetId = c.req.param("id");
+  const status = WorkOrderStatus.optional().safeParse(c.req.query("status"));
+  if (!status.success) return c.json({ error: "validation_error", issues: status.error.issues }, 400);
+  if (!(await assetExists(c, assetId))) return notFound(c);
+
+  const rows = await drizzle(c.env.DB)
+    .select()
+    .from(work_orders)
+    .where(
+      status.data === undefined
+        ? eq(work_orders.asset_id, assetId)
+        : and(eq(work_orders.asset_id, assetId), eq(work_orders.status, status.data)),
+    )
+    .orderBy(...newestWorkOrders);
+  return c.json({ work_orders: rows.map(workOrderToApi) });
+});
 
 assetsRoutes.post("/", async (c) => {
   const parsed = await parseBody(c, CreateAssetInput);

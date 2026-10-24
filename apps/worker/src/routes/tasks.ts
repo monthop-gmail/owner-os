@@ -1,10 +1,11 @@
-import { CompleteWorkOrderInput, type Evidence, type Polygon, type WorkOrder } from "@owner-os/shared";
-import { and, count, eq, exists, inArray, isNotNull, isNull, sql } from "drizzle-orm";
+import { CompleteWorkOrderInput, type Evidence, type Polygon } from "@owner-os/shared";
+import { and, count, desc, eq, exists, inArray, isNotNull, isNull, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/d1";
 import { Hono, type Context } from "hono";
 import { asset_units, assets, work_order_evidence, work_orders } from "../db/schema";
 import type { Env } from "../env";
 import { checkGeofence } from "../geofence";
+import { evidenceToApi, toIso, workOrderToApi } from "../mappers";
 
 type AppContext = Context<{ Bindings: Env }>;
 
@@ -16,9 +17,6 @@ const ACTIVE_STATUSES = ["open", "in_progress"] as const;
 export const MAX_EVIDENCE_PER_WORK_ORDER = 20;
 const CAPTURED_AT_MAX_FUTURE_MS = 5 * 60 * 1000;
 const CAPTURED_AT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
-
-// API layer uses ISO-8601 strings; D1 stores integer epoch ms.
-const toIso = (ms: number): string => new Date(ms).toISOString();
 
 const isActive = (status: string): boolean => (ACTIVE_STATUSES as readonly string[]).includes(status);
 
@@ -45,18 +43,6 @@ const workOrderIsActive = (db: Db, woId: string) =>
       .from(work_orders)
       .where(and(eq(work_orders.id, woId), inArray(work_orders.status, [...ACTIVE_STATUSES]))),
   );
-
-function workOrderToApi(row: typeof work_orders.$inferSelect): WorkOrder {
-  return {
-    id: row.id,
-    asset_id: row.asset_id,
-    unit_id: row.unit_id,
-    title: row.title,
-    status: row.status,
-    due_at: row.due_at === null ? null : toIso(row.due_at),
-    created_at: toIso(row.created_at),
-  };
-}
 
 async function findWorkOrder(c: AppContext, id: string) {
   return drizzle(c.env.DB).select().from(work_orders).where(eq(work_orders.id, id)).get();
@@ -96,6 +82,22 @@ const alreadyUploaded = (c: AppContext) => c.json({ error: "evidence_already_upl
 const evidenceLimit = (c: AppContext) => c.json({ error: "evidence_limit" }, 409);
 
 export const tasksRoutes = new Hono<{ Bindings: Env }>();
+
+tasksRoutes.get("/:id", async (c) => {
+  const db = drizzle(c.env.DB);
+  const woId = c.req.param("id");
+  const [woRows, evidenceRows] = await db.batch([
+    db.select().from(work_orders).where(eq(work_orders.id, woId)),
+    db
+      .select()
+      .from(work_order_evidence)
+      .where(and(eq(work_order_evidence.work_order_id, woId), isNotNull(work_order_evidence.uploaded_at)))
+      .orderBy(desc(work_order_evidence.uploaded_at), desc(sql`${work_order_evidence}.rowid`)),
+  ]);
+  const wo = woRows[0];
+  if (!wo) return woNotFound(c);
+  return c.json({ work_order: workOrderToApi(wo), evidence: evidenceRows.map(evidenceToApi) });
+});
 
 tasksRoutes.post("/:id/upload-ticket", async (c) => {
   const woId = c.req.param("id");
