@@ -9,7 +9,7 @@ import {
 import { and, count, desc, eq, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/d1";
 import { Hono, type Context } from "hono";
-import { asset_units, assets, work_orders } from "../db/schema";
+import { asset_units, assets, farm_crop_cycles, work_orders } from "../db/schema";
 import type { Env } from "../env";
 import { assetToApi, toMs, unitToApi, workOrderToApi } from "../mappers";
 
@@ -159,9 +159,22 @@ assetsRoutes.post("/:id/work-orders", async (c) => {
 
   const parsed = await parseBody(c, CreateWorkOrderInput);
   if (!parsed.ok) return parsed.res;
-  const { title, unit_id, due_at } = parsed.data;
+  const { title, due_at, crop_cycle_id } = parsed.data;
+  let { unit_id } = parsed.data;
 
   const db = drizzle(c.env.DB);
+  if (crop_cycle_id !== undefined) {
+    // The cycle must belong to a unit of this asset; the work order then targets that unit.
+    const cycle = await db
+      .select({ unit_id: farm_crop_cycles.unit_id })
+      .from(farm_crop_cycles)
+      .innerJoin(asset_units, eq(asset_units.id, farm_crop_cycles.unit_id))
+      .where(and(eq(farm_crop_cycles.id, crop_cycle_id), eq(asset_units.asset_id, assetId)))
+      .get();
+    if (cycle === undefined) return c.json({ error: "crop_cycle_not_in_asset" }, 400);
+    if (unit_id !== undefined && unit_id !== cycle.unit_id) return c.json({ error: "unit_not_in_crop_cycle" }, 400);
+    unit_id = cycle.unit_id;
+  }
   if (unit_id !== undefined) {
     const unit = await db
       .select({ id: asset_units.id })
@@ -178,6 +191,7 @@ assetsRoutes.post("/:id/work-orders", async (c) => {
       id: crypto.randomUUID(),
       asset_id: assetId,
       unit_id: unit_id ?? null,
+      crop_cycle_id: crop_cycle_id ?? null,
       title,
       status: "open",
       due_at: due_at === undefined ? null : toMs(due_at),

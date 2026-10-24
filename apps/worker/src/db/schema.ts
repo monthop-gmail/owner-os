@@ -40,13 +40,19 @@ export const work_orders = sqliteTable(
       .notNull()
       .references(() => assets.id),
     unit_id: text("unit_id").references(() => asset_units.id),
+    // Optional link to a crop cycle (migration 0001); must be a cycle of the same unit/asset (checked in the API).
+    crop_cycle_id: text("crop_cycle_id").references(() => farm_crop_cycles.id),
     title: text("title").notNull(),
     status: text("status", { enum: WORK_ORDER_STATUSES }).notNull().default("open"),
     due_at: integer("due_at"),
     created_at: integer("created_at").notNull(),
     updated_at: integer("updated_at").notNull(),
   },
-  (t) => [index("work_orders_asset_id_idx").on(t.asset_id), index("work_orders_status_idx").on(t.status)],
+  (t) => [
+    index("work_orders_asset_id_idx").on(t.asset_id),
+    index("work_orders_status_idx").on(t.status),
+    index("work_orders_crop_cycle_id_idx").on(t.crop_cycle_id),
+  ],
 );
 
 // Location/geofence columns are nullable: the row is created when the upload ticket is issued (Task 2.2).

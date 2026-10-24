@@ -196,6 +196,7 @@ const workOrder = (over: Partial<WorkOrder>): WorkOrder => ({
   id: "wo-1",
   asset_id: "a-1",
   unit_id: "u-1",
+  crop_cycle_id: null,
   title: "ใส่ปุ๋ย",
   status: "open",
   due_at: null,

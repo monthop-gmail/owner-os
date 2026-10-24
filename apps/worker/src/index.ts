@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { requireApiToken } from "./auth";
 import type { Env } from "./env";
 import { assetsRoutes } from "./routes/assets";
+import { cropCyclesRoutes, unitCropCyclesRoutes } from "./routes/crop-cycles";
 import { evidenceRoutes } from "./routes/evidence";
 import { tasksRoutes } from "./routes/tasks";
 import { TEST_CAMERA_CSP, TEST_CAMERA_HTML } from "./test-camera";
@@ -23,5 +24,7 @@ app.use("/api/*", requireApiToken);
 app.route("/api/assets", assetsRoutes);
 app.route("/api/tasks", tasksRoutes);
 app.route("/api/evidence", evidenceRoutes);
+app.route("/api/units", unitCropCyclesRoutes);
+app.route("/api/crop-cycles", cropCyclesRoutes);
 
 export default app;

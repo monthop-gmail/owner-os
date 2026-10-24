@@ -1,12 +1,13 @@
 // Row -> API mappers, one per entity. API layer: ISO-8601 strings, GeoJSON objects, snake_case.
 // Add future fields (owner, assignee, cost, …) here so every route picks them up.
-import type { Asset, AssetUnit, Evidence, Polygon, WorkOrder } from "@owner-os/shared";
-import type { asset_units, assets, work_order_evidence, work_orders } from "./db/schema";
+import type { Asset, AssetUnit, CropCycle, Evidence, Polygon, WorkOrder } from "@owner-os/shared";
+import type { asset_units, assets, farm_crop_cycles, work_order_evidence, work_orders } from "./db/schema";
 
 export type AssetRow = typeof assets.$inferSelect;
 export type AssetUnitRow = typeof asset_units.$inferSelect;
 export type WorkOrderRow = typeof work_orders.$inferSelect;
 export type EvidenceRow = typeof work_order_evidence.$inferSelect;
+export type CropCycleRow = typeof farm_crop_cycles.$inferSelect;
 
 /** Evidence as stored: location/geofence fields stay null until the work order is completed with it. */
 export type EvidenceApi = {
@@ -44,6 +45,7 @@ export function workOrderToApi(row: WorkOrderRow): WorkOrder {
     id: row.id,
     asset_id: row.asset_id,
     unit_id: row.unit_id,
+    crop_cycle_id: row.crop_cycle_id,
     title: row.title,
     status: row.status,
     due_at: toIsoOrNull(row.due_at),
@@ -62,5 +64,19 @@ export function evidenceToApi(row: EvidenceRow): EvidenceApi {
     captured_at: toIsoOrNull(row.captured_at),
     inside_geofence: row.inside_geofence,
     distance_outside_m: row.distance_outside_m,
+  };
+}
+
+export function cropCycleToApi(row: CropCycleRow): CropCycle {
+  return {
+    id: row.id,
+    unit_id: row.unit_id,
+    crop: row.crop,
+    variety: row.variety,
+    status: row.status,
+    started_at: toIsoOrNull(row.started_at),
+    expected_harvest_at: toIsoOrNull(row.expected_harvest_at),
+    ended_at: toIsoOrNull(row.ended_at),
+    created_at: toIso(row.created_at),
   };
 }

@@ -6,6 +6,12 @@ import {
   CreateAssetInput,
   CreateAssetUnitInput,
   CreateWorkOrderInput,
+  CreateCropCycleInput,
+  CROP_CYCLE_TRANSITIONS,
+  CropCycleSchema,
+  CropCycleStatus,
+  TransitionCropCycleInput,
+  canTransition,
   LngLatSchema,
   PointSchema,
   PolygonSchema,
@@ -41,6 +47,7 @@ const workOrder = {
   id: "wo-1",
   asset_id: "a-1",
   unit_id: null,
+  crop_cycle_id: null,
   title: "ใส่ปุ๋ย",
   status: "open",
   due_at: null,
@@ -154,5 +161,59 @@ describe("inputs", () => {
   it("rejects CompleteWorkOrderInput without evidence_id", () => {
     const { evidence_id: _omit, ...noEvidence } = complete;
     expect(CompleteWorkOrderInput.safeParse(noEvidence).success).toBe(false);
+  });
+});
+
+describe("crop cycles", () => {
+  it("allows exactly the five forward transitions", () => {
+    const allowed: [CropCycleStatus, CropCycleStatus][] = [
+      ["planned", "growing"],
+      ["growing", "harvesting"],
+      ["harvesting", "closed"],
+      ["planned", "closed"],
+      ["growing", "closed"],
+    ];
+    for (const [from, to] of allowed) expect(canTransition(from, to), `${from}->${to}`).toBe(true);
+    const total = Object.values(CROP_CYCLE_TRANSITIONS).reduce((n, tos) => n + tos.length, 0);
+    expect(total).toBe(allowed.length);
+  });
+
+  it("forbids going back, skipping to harvesting, and leaving closed", () => {
+    const statuses = CropCycleStatus.options;
+    expect(canTransition("growing", "planned")).toBe(false);
+    expect(canTransition("closed", "growing")).toBe(false);
+    expect(canTransition("harvesting", "growing")).toBe(false);
+    expect(canTransition("planned", "harvesting")).toBe(false);
+    for (const s of statuses) {
+      expect(canTransition(s, s)).toBe(false);
+      expect(canTransition("closed", s)).toBe(false);
+    }
+  });
+
+  it("validates crop cycle shapes and strict inputs", () => {
+    const cycle = {
+      id: "c-1",
+      unit_id: "u-1",
+      crop: "ทุเรียน",
+      variety: "หมอนทอง",
+      status: "planned",
+      started_at: null,
+      expected_harvest_at: null,
+      ended_at: null,
+      created_at: NOW,
+    };
+    expect(CropCycleSchema.safeParse(cycle).success).toBe(true);
+    expect(CropCycleSchema.safeParse({ ...cycle, status: "fallow" }).success).toBe(false);
+    expect(CreateCropCycleInput.safeParse({ crop: "ข้าวโพด" }).success).toBe(true);
+    expect(CreateCropCycleInput.safeParse({ crop: "" }).success).toBe(false);
+    expect(CreateCropCycleInput.safeParse({ crop: "x".repeat(101) }).success).toBe(false);
+    expect(CreateCropCycleInput.safeParse({ crop: "ข้าวโพด", status: "growing" }).success).toBe(false);
+    expect(TransitionCropCycleInput.safeParse({ to: "growing" }).success).toBe(true);
+    expect(TransitionCropCycleInput.safeParse({ to: "fallow" }).success).toBe(false);
+    expect(TransitionCropCycleInput.safeParse({ to: "growing", started_at: NOW }).success).toBe(false);
+  });
+
+  it("accepts crop_cycle_id on work orders", () => {
+    expect(CreateWorkOrderInput.safeParse({ title: "งาน", crop_cycle_id: "c-1" }).success).toBe(true);
   });
 });
