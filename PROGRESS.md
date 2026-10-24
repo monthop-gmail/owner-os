@@ -13,6 +13,7 @@
 - [x] Task 2.4: auth ขั้นต่ำ (bearer token จาก Worker secret) — ต้องเสร็จก่อน deploy ครั้งแรก
 - [x] Task 2.3: /test-camera หน้า HTML ทดสอบ GPS + กล้อง + อัปโหลด (ทดสอบบนมือถือได้หลัง deploy HTTPS) — หมายเหตุ: ทดสอบบนมือถือจริงรอ deploy HTTPS
 - [x] Task 2.5: hardening ก่อน deploy (race · เพดาน evidence · captured_at)
+- [x] Task 2.6: CI (GitHub Actions)
 
 ## Milestone 3: Web Dashboard
 - [ ] Task 3.1: apps/web — Vite + React + Tailwind + proxy ไป Worker
