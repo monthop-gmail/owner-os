@@ -14,6 +14,7 @@ import {
   type Evidence,
   type HarvestLog,
   type Polygon,
+  type SatangContractTerms,
   type WorkOrder,
 } from "@owner-os/shared";
 import type {
@@ -123,31 +124,7 @@ export function harvestLogToApi(row: HarvestLogRow): HarvestLog {
 }
 
 /** Contract terms as stored in asset_contracts.terms_json: satang and basis points (integers). */
-export type StoredContractTerms =
-  | {
-      contract_type: "turnkey_profit_share";
-      owner_share_bps: number;
-      operator_share_bps: number;
-      management_retainer_monthly_satang: number;
-      retainer_timing: "before_split" | "after_split";
-      loss_policy: "owner_absorbs" | "split_by_share";
-    }
-  | {
-      contract_type: "pay_per_job";
-      rates: { job_key: string; label: string; unit: "rai" | "job" | "hour"; rate_satang: number }[];
-    }
-  | {
-      contract_type: "property_management";
-      revenue_commission_bps: number;
-      cleaning_fee_per_turnover_satang: number;
-    }
-  | {
-      contract_type: "fixed_target_bonus";
-      owner_target_revenue_satang: number;
-      excess_operator_bps: number;
-      opex_borne_by: "operator" | "owner";
-      shortfall_policy: "owner_absorbs" | "operator_covers";
-    };
+export type StoredContractTerms = SatangContractTerms;
 
 export function contractTermsToStored(t: ContractTerms): StoredContractTerms {
   switch (t.contract_type) {

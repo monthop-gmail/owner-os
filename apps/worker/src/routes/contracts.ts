@@ -1,10 +1,21 @@
-import { CreateContractInput } from "@owner-os/shared";
-import { and, desc, eq, sql } from "drizzle-orm";
+import {
+  computeSettlement,
+  CreateContractInput,
+  FixedTargetPreviewInput,
+  PayPerJobPreviewInput,
+  PropertyPreviewInput,
+  satangToThb,
+  SettlementError,
+  thbToSatang,
+  TurnkeyPreviewInput,
+  type SettlementInput,
+} from "@owner-os/shared";
+import { and, desc, eq, sql, sum } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/d1";
 import { Hono, type Context } from "hono";
-import { asset_contracts, assets } from "../db/schema";
+import { asset_contracts, asset_units, assets, farm_crop_cycles, farm_harvest_logs } from "../db/schema";
 import type { Env } from "../env";
-import { contractTermsToStored, contractToApi, toMs } from "../mappers";
+import { contractTermsToStored, contractToApi, toMs, type StoredContractTerms } from "../mappers";
 
 type AppContext = Context<{ Bindings: Env }>;
 
@@ -92,4 +103,116 @@ contractsRoutes.post("/:id/deactivate", async (c) => {
 
   const exists = await db.select({ id: asset_contracts.id }).from(asset_contracts).where(eq(asset_contracts.id, id)).get();
   return exists ? c.json({ error: "contract_not_active" }, 409) : contractNotFound(c);
+});
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+/** A "month" for retainers derived from a crop cycle: 30 days, rounded up. */
+const MONTH_MS = 30 * DAY_MS;
+
+type RevenueSource = { revenue_from: "harvest_logs"; crop_cycle_id: string } | { revenue_from: "input" };
+
+/**
+ * Draft settlement for one contract — preview only: nothing is written to the database and nothing is paid.
+ * The body depends on the contract type; amounts are baht in and baht out (satang inside the engine).
+ */
+contractsRoutes.post("/:id/settlement-preview", async (c) => {
+  const db = drizzle(c.env.DB);
+  const contract = await db.select().from(asset_contracts).where(eq(asset_contracts.id, c.req.param("id"))).get();
+  if (!contract) return contractNotFound(c);
+  if (!contract.is_active) return c.json({ error: "contract_not_active" }, 409);
+  const terms = JSON.parse(contract.terms_json) as StoredContractTerms;
+
+  /** Revenue from the cycle's harvest logs; the cycle must belong to the contract's asset. */
+  const cycleRevenue = async (cropCycleId: string) => {
+    const cycle = await db
+      .select({ started_at: farm_crop_cycles.started_at, ended_at: farm_crop_cycles.ended_at })
+      .from(farm_crop_cycles)
+      .innerJoin(asset_units, eq(asset_units.id, farm_crop_cycles.unit_id))
+      .where(and(eq(farm_crop_cycles.id, cropCycleId), eq(asset_units.asset_id, contract.asset_id)))
+      .get();
+    if (!cycle) return null;
+    const [total] = await db
+      .select({ revenue_satang: sum(farm_harvest_logs.revenue_satang).mapWith(Number) })
+      .from(farm_harvest_logs)
+      .where(eq(farm_harvest_logs.crop_cycle_id, cropCycleId));
+    return { ...cycle, revenue_satang: total?.revenue_satang ?? 0 };
+  };
+  const cycleNotInAsset = () => c.json({ error: "crop_cycle_not_in_asset" }, 400);
+
+  let input: SettlementInput;
+  let source: RevenueSource = { revenue_from: "input" };
+
+  switch (terms.contract_type) {
+    case "turnkey_profit_share":
+    case "fixed_target_bonus": {
+      const parsed =
+        terms.contract_type === "turnkey_profit_share"
+          ? await parseBody(c, TurnkeyPreviewInput)
+          : await parseBody(c, FixedTargetPreviewInput);
+      if (!parsed.ok) return parsed.res;
+      const body = parsed.data;
+      let revenue = body.revenue_thb === undefined ? 0 : thbToSatang(body.revenue_thb);
+      let periodMonths: number | undefined = (body as { period_months?: number | undefined }).period_months;
+      if (body.crop_cycle_id !== undefined) {
+        const cycle = await cycleRevenue(body.crop_cycle_id);
+        if (!cycle) return cycleNotInAsset();
+        revenue = cycle.revenue_satang;
+        source = { revenue_from: "harvest_logs", crop_cycle_id: body.crop_cycle_id };
+        if (periodMonths === undefined && cycle.started_at !== null && cycle.ended_at !== null) {
+          periodMonths = Math.ceil(Math.max(0, cycle.ended_at - cycle.started_at) / MONTH_MS);
+        }
+      }
+      const opex = thbToSatang(body.opex_thb);
+      if (terms.contract_type === "turnkey_profit_share") {
+        if (periodMonths === undefined) {
+          return c.json(
+            { error: "period_months_required", message: "send period_months, or a crop_cycle_id whose cycle has started_at and ended_at" },
+            400,
+          );
+        }
+        input = { contract_type: terms.contract_type, revenue_satang: revenue, opex_satang: opex, period_months: periodMonths };
+      } else {
+        input = { contract_type: terms.contract_type, revenue_satang: revenue, opex_satang: opex };
+      }
+      break;
+    }
+    case "pay_per_job": {
+      const parsed = await parseBody(c, PayPerJobPreviewInput);
+      if (!parsed.ok) return parsed.res;
+      input = {
+        contract_type: terms.contract_type,
+        jobs: parsed.data.jobs.map((j) => ({ job_key: j.job_key, quantity_hundredths: Math.round(j.quantity * 100) })),
+      };
+      break;
+    }
+    case "property_management": {
+      const parsed = await parseBody(c, PropertyPreviewInput);
+      if (!parsed.ok) return parsed.res;
+      input = {
+        contract_type: terms.contract_type,
+        revenue_satang: thbToSatang(parsed.data.revenue_thb),
+        turnovers: parsed.data.turnovers,
+      };
+      break;
+    }
+  }
+
+  let result;
+  try {
+    result = computeSettlement(terms, input);
+  } catch (err) {
+    if (err instanceof SettlementError) return c.json({ error: err.code, message: err.message }, 400);
+    throw err;
+  }
+
+  return c.json({
+    contract_id: contract.id,
+    contract_type: result.contract_type,
+    rules_status: result.rules_status,
+    lines: result.lines.map((l) => ({ key: l.key, label_th: l.label_th, amount_thb: satangToThb(l.amount_satang), party: l.party })),
+    owner_payout_thb: satangToThb(result.owner_payout_satang),
+    operator_payout_thb: satangToThb(result.operator_payout_satang),
+    assumptions: result.assumptions,
+    source,
+  });
 });

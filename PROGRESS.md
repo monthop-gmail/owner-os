@@ -27,4 +27,4 @@
 - [x] Task 4.1b: แม่แบบงานตามช่วง (ทุเรียน/ข้าวโพด)
 - [x] Task 4.2: Harvest log + ใบชั่งน้ำหนัก เก็บใน R2
 - [x] Task 4.3a: สัญญาครบ 4 type (draft_unconfirmed)
-- [ ] Task 4.3b: settlement engine
+- [x] Task 4.3b: settlement engine — หมายเหตุ: preview เท่านั้น · กติกา draft_unconfirmed · บันทึก/อนุมัติ settlement รอเจ้าของ
