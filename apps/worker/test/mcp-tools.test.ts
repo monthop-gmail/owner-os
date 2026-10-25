@@ -128,7 +128,7 @@ describe("JSON-RPC lifecycle", () => {
 });
 
 describe("tools", () => {
-  it("tools/list has the twelve read-only tools", async () => {
+  it("tools/list has the twelve read-only tools and three draft tools", async () => {
     const tools = (await rpc("tools/list")).result?.tools as { name: string; annotations: unknown; inputSchema: Record<string, unknown> }[];
     expect(tools.map((t) => t.name)).toEqual([
       "list_assets",
@@ -143,9 +143,15 @@ describe("tools", () => {
       "get_disaster_impact",
       "settlement_preview",
       "settlement_what_if",
+      "propose_disaster_event",
+      "propose_disaster_prep",
+      "propose_recovery_tasks",
     ]);
     for (const t of tools) {
-      expect(t.annotations).toEqual({ readOnlyHint: true });
+      // Draft tools (propose_*) only store a pending draft; see ai-drafts.test.ts.
+      expect(t.annotations).toEqual(
+        t.name.startsWith("propose_") ? { readOnlyHint: false, destructiveHint: false } : { readOnlyHint: true },
+      );
       expect(t.inputSchema).toMatchObject({ type: "object", additionalProperties: false });
     }
     expect(tools[1]?.inputSchema.required).toEqual(["asset_id"]);
@@ -469,8 +475,10 @@ describe("crop cycle / harvest / contract / disaster tools", () => {
 
   it("list_contracts says the numbers are drafts; no file tools exist", async () => {
     const tools = (await rpc("tools/list")).result?.tools as { name: string; description: string; annotations: unknown }[];
-    expect(tools).toHaveLength(12);
-    expect(tools.every((t) => JSON.stringify(t.annotations) === '{"readOnlyHint":true}')).toBe(true);
+    expect(tools).toHaveLength(15);
+    const readTools = tools.filter((t) => !t.name.startsWith("propose_"));
+    expect(readTools).toHaveLength(12);
+    expect(readTools.every((t) => JSON.stringify(t.annotations) === '{"readOnlyHint":true}')).toBe(true);
     expect(tools.find((t) => t.name === "list_contracts")?.description).toContain("ตัวเลขและกติกาทั้งหมดเป็นร่าง draft_unconfirmed");
     expect(tools.some((t) => /image|slip|file/i.test(t.name))).toBe(false);
   });

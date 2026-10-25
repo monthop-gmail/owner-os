@@ -1,6 +1,7 @@
 // Stateless MCP server over JSON-RPC 2.0 (POST /mcp, application/json responses only).
 // Tools are read-only and call the existing Hono /api routes in-process with API_TOKEN,
 // so the API token never reaches the AI client.
+import { CreateDisasterEventInput, DisasterPrepInput, DisasterType } from "@owner-os/shared";
 import { WORK_ORDER_STATUSES } from "../db/schema";
 import type { Env } from "../env";
 import { app } from "../index";
@@ -20,8 +21,9 @@ type ToolBase = {
   title: string;
   description: string;
   inputSchema: Record<string, unknown>;
-  annotations: { readOnlyHint: true };
-  scope: "read";
+  annotations: { readOnlyHint: boolean; destructiveHint?: boolean };
+  /** `read`: reads/computes only. `draft`: inserts an ai_drafts row only (owner confirms elsewhere). */
+  scope: "read" | "draft";
 };
 /** A plain read tool: one internal GET. */
 type GetTool = ToolBase & {
@@ -30,11 +32,11 @@ type GetTool = ToolBase & {
   /** Returns the /api path (+ query) to GET, built only with apiPath/withQuery; null when the arguments are invalid. */
   path(args: Record<string, unknown>): string | null;
 };
-/** A computed tool (settlement preview/what-if): only uses internalPreviewPost. */
+/** A computed tool (settlement preview/what-if via internalPreviewPost) or a draft tool (ai_drafts insert only). */
 type RunTool = ToolBase & {
   /** Strict argument check; null → validation_error before anything else happens. */
   parse(args: Record<string, unknown>): unknown;
-  run(input: unknown, env: Env & { API_TOKEN: string }): Promise<ToolOutcome>;
+  run(input: unknown, env: Env & { API_TOKEN: string }, auth: McpAuth | undefined): Promise<ToolOutcome>;
 };
 type Tool = GetTool | RunTool;
 
@@ -386,6 +388,166 @@ const settlementWhatIfTool: RunTool = {
   },
 };
 
+// ---- Draft tools (scope `draft`): AI proposes, the owner confirms via /api/ai-drafts ----
+// These only INSERT into ai_drafts (plus read queries); they never call the existing write routes.
+
+export const MAX_PENDING_DRAFTS_PER_ASSET = 20;
+const DRAFT_MESSAGE = "ร่างรอเจ้าของยืนยันในระบบ ยังไม่มีผลกับข้อมูลจริง";
+const DRAFT_ANNOTATIONS = { readOnlyHint: false, destructiveHint: false };
+
+type DraftKind = "disaster_event" | "disaster_prep" | "recovery_tasks";
+
+/** Inserts a pending draft unless the asset already has MAX_PENDING_DRAFTS_PER_ASSET (one statement). */
+async function insertDraft(
+  env: Env,
+  auth: McpAuth | undefined,
+  kind: DraftKind,
+  assetId: string,
+  payload: unknown,
+): Promise<ToolOutcome> {
+  const id = crypto.randomUUID();
+  const res = await env.DB.prepare(
+    `INSERT INTO ai_drafts (id, kind, asset_id, payload_json, status, created_at, created_by_user_hash, created_by_client_id)
+     SELECT ?1, ?2, ?3, ?4, 'pending', ?5, ?6, ?7
+     WHERE (SELECT COUNT(*) FROM ai_drafts WHERE asset_id = ?3 AND status = 'pending') < ?8`,
+  )
+    .bind(id, kind, assetId, JSON.stringify(payload), Date.now(), auth?.userId ?? "", auth?.clientId ?? "", MAX_PENDING_DRAFTS_PER_ASSET)
+    .run();
+  if (res.meta.changes !== 1) return toolError("too_many_pending_drafts");
+  return jsonResult({ draft_id: id, status: "pending", message: DRAFT_MESSAGE });
+}
+
+async function assetExists(env: Env, assetId: string): Promise<boolean> {
+  return (await env.DB.prepare("SELECT 1 AS x FROM assets WHERE id = ?").bind(assetId).first()) !== null;
+}
+
+/** True when every id is a unit of the asset. */
+async function unitsInAsset(env: Env, assetId: string, unitIds: string[]): Promise<boolean> {
+  const unique = [...new Set(unitIds)];
+  if (unique.length === 0) return true;
+  const row = await env.DB.prepare(
+    `SELECT COUNT(*) AS n FROM asset_units WHERE asset_id = ? AND id IN (${unique.map(() => "?").join(", ")})`,
+  )
+    .bind(assetId, ...unique)
+    .first<{ n: number }>();
+  return row?.n === unique.length;
+}
+
+const safeId = (v: unknown): v is string => typeof v === "string" && SAFE_SEGMENT.test(v);
+const ID_PROP = { type: "string", pattern: SAFE_SEGMENT.source } as const;
+const DISASTER_TYPE_PROP = { type: "string", enum: [...DisasterType.options] } as const;
+
+const proposeDisasterEventTool: RunTool = {
+  name: "propose_disaster_event",
+  title: "เสนอร่างบันทึกเหตุภัย",
+  description:
+    "Propose recording a disaster event (affected units + damage %) for the owner to confirm. " +
+    "Creates a pending draft only — no disaster event exists until the owner confirms. เสนอร่างให้เจ้าของยืนยัน (ไม่มีผลจนกว่าจะยืนยัน)",
+  inputSchema: {
+    type: "object",
+    properties: {
+      asset_id: ID_PROP,
+      event_type: DISASTER_TYPE_PROP,
+      occurred_at: { type: "string", format: "date-time" },
+      ended_at: { type: "string", format: "date-time" },
+      description: { type: "string", minLength: 1, maxLength: 1000 },
+      units: {
+        type: "array",
+        minItems: 1,
+        maxItems: 200,
+        items: {
+          type: "object",
+          properties: {
+            unit_id: ID_PROP,
+            damage_pct: { type: "number", minimum: 0, maximum: 100 },
+            note: { type: "string", minLength: 1, maxLength: 500 },
+          },
+          required: ["unit_id", "damage_pct"],
+          additionalProperties: false,
+        },
+      },
+    },
+    required: ["asset_id", "event_type", "occurred_at", "units"],
+    additionalProperties: false,
+  },
+  annotations: DRAFT_ANNOTATIONS,
+  scope: "draft",
+  parse: (args) => {
+    const { asset_id, ...rest } = args;
+    if (!safeId(asset_id)) return null;
+    // Same zod schema as POST /api/assets/:id/disaster-events.
+    const parsed = CreateDisasterEventInput.safeParse(rest);
+    if (!parsed.success || !parsed.data.units.every((u) => safeId(u.unit_id))) return null;
+    return { asset_id, payload: parsed.data };
+  },
+  run: async (input, env, auth) => {
+    const { asset_id, payload } = input as { asset_id: string; payload: CreateDisasterEventInput };
+    if (!(await assetExists(env, asset_id))) return toolError("asset_not_found");
+    if (!(await unitsInAsset(env, asset_id, payload.units.map((u) => u.unit_id)))) return toolError("unit_not_in_asset");
+    return insertDraft(env, auth, "disaster_event", asset_id, payload);
+  },
+};
+
+const proposeDisasterPrepTool: RunTool = {
+  name: "propose_disaster_prep",
+  title: "เสนอร่างงานเตรียมรับมือภัย",
+  description:
+    "Propose preparation work orders for an expected disaster (all units of the asset, or unit_ids). " +
+    "Creates a pending draft only — no work order exists until the owner confirms. เสนอร่างให้เจ้าของยืนยัน (ไม่มีผลจนกว่าจะยืนยัน)",
+  inputSchema: {
+    type: "object",
+    properties: {
+      asset_id: ID_PROP,
+      event_type: DISASTER_TYPE_PROP,
+      unit_ids: { type: "array", items: ID_PROP, minItems: 1, maxItems: 200, uniqueItems: true },
+    },
+    required: ["asset_id", "event_type"],
+    additionalProperties: false,
+  },
+  annotations: DRAFT_ANNOTATIONS,
+  scope: "draft",
+  parse: (args) => {
+    const { asset_id, ...rest } = args;
+    if (!safeId(asset_id)) return null;
+    // Same zod schema as POST /api/assets/:id/disaster-prep.
+    const parsed = DisasterPrepInput.safeParse(rest);
+    if (!parsed.success || !(parsed.data.unit_ids ?? []).every(safeId)) return null;
+    return { asset_id, payload: parsed.data };
+  },
+  run: async (input, env, auth) => {
+    const { asset_id, payload } = input as { asset_id: string; payload: { event_type: string; unit_ids?: string[] } };
+    if (!(await assetExists(env, asset_id))) return toolError("asset_not_found");
+    if (!(await unitsInAsset(env, asset_id, payload.unit_ids ?? []))) return toolError("unit_not_in_asset");
+    return insertDraft(env, auth, "disaster_prep", asset_id, payload);
+  },
+};
+
+const proposeRecoveryTasksTool: RunTool = {
+  name: "propose_recovery_tasks",
+  title: "เสนอร่างงานฟื้นฟูหลังภัย",
+  description:
+    "Propose recovery work orders for a recorded disaster event that has no recovery tasks yet. " +
+    "Creates a pending draft only — no work order exists until the owner confirms. เสนอร่างให้เจ้าของยืนยัน (ไม่มีผลจนกว่าจะยืนยัน)",
+  inputSchema: {
+    type: "object",
+    properties: { disaster_event_id: ID_PROP },
+    required: ["disaster_event_id"],
+    additionalProperties: false,
+  },
+  annotations: DRAFT_ANNOTATIONS,
+  scope: "draft",
+  parse: (args) => (onlyKeys(args, ["disaster_event_id"]) && safeId(args.disaster_event_id) ? { disaster_event_id: args.disaster_event_id } : null),
+  run: async (input, env, auth) => {
+    const { disaster_event_id } = input as { disaster_event_id: string };
+    const event = await env.DB.prepare("SELECT asset_id, recovery_tasks_created_at FROM disaster_events WHERE id = ?")
+      .bind(disaster_event_id)
+      .first<{ asset_id: string; recovery_tasks_created_at: number | null }>();
+    if (!event) return toolError("disaster_event_not_found");
+    if (event.recovery_tasks_created_at !== null) return toolError("recovery_tasks_already_created");
+    return insertDraft(env, auth, "recovery_tasks", event.asset_id, { disaster_event_id });
+  },
+};
+
 const TOOLS: Tool[] = [
   {
     name: "list_assets",
@@ -520,6 +682,9 @@ const TOOLS: Tool[] = [
   }),
   settlementPreviewTool,
   settlementWhatIfTool,
+  proposeDisasterEventTool,
+  proposeDisasterPrepTool,
+  proposeRecoveryTasksTool,
 ];
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -559,16 +724,23 @@ function internalGet(path: string, env: Env & { API_TOKEN: string }): Promise<Re
   return Promise.resolve(app.request(path, { method: "GET", headers: { authorization: `Bearer ${env.API_TOKEN}` } }, env));
 }
 
-async function callTool(tool: Tool, args: unknown, scopes: string[], env: Env): Promise<ToolOutcome> {
+async function callTool(
+  tool: Tool,
+  args: unknown,
+  scopes: string[],
+  env: Env,
+  auth: McpAuth | undefined,
+): Promise<ToolOutcome> {
   if (!scopes.includes(tool.scope)) return toolError("insufficient_scope");
   if (args !== undefined && !isObject(args)) return toolError("validation_error");
   if ("run" in tool) {
     const input = tool.parse(args ?? {});
     if (input === null) return toolError("validation_error");
-    const apiToken = env.API_TOKEN;
-    if (!apiToken) return toolError("server_not_configured");
+    // Draft tools never call /api, so only read tools need API_TOKEN.
+    const apiToken = env.API_TOKEN ?? "";
+    if (tool.scope === "read" && !apiToken) return toolError("server_not_configured");
     try {
-      return await tool.run(input, { ...env, API_TOKEN: apiToken });
+      return await tool.run(input, { ...env, API_TOKEN: apiToken }, auth);
     } catch {
       return toolError("internal_error");
     }
@@ -627,7 +799,7 @@ async function clientGrant(env: Env, tokenScopes: string[]): Promise<ClientGrant
     .bind(MCP_DEFAULT_CLIENT)
     .first<{ scopes: string; revoked_at: number | null; rate_per_minute: number; rate_per_day: number }>();
   if (!row || row.revoked_at !== null) return null;
-  const allowed = row.scopes.split(/\s+/).filter(Boolean);
+  const allowed = row.scopes.split(/[\s,]+/).filter(Boolean);
   return {
     scopes: tokenScopes.filter((s) => allowed.includes(s)),
     ratePerMinute: row.rate_per_minute,
@@ -642,7 +814,11 @@ const DAY_MS = 24 * 60 * MINUTE_MS;
  * Per-DCR-client limit counted from mcp_audit rows (index on client_id, at). This is read-then-decide,
  * not atomic: concurrent calls (and audit rows still pending in waitUntil) can overshoot slightly.
  */
-async function rateLimitExceeded(env: Env, clientId: string, grant: ClientGrant): Promise<"per_minute" | "per_day" | null> {
+async function rateLimitExceeded(
+  env: Env,
+  clientId: string,
+  grant: ClientGrant,
+): Promise<"per_minute" | "per_day" | "unavailable" | null> {
   const now = Date.now();
   let row: { day: number; minute: number } | null;
   try {
@@ -652,9 +828,9 @@ async function rateLimitExceeded(env: Env, clientId: string, grant: ClientGrant)
       .bind(now - MINUTE_MS, clientId, now - DAY_MS)
       .first<{ day: number; minute: number }>();
   } catch (err) {
-    // Like audit writes, a broken audit table must not take the read-only tools down: fail open, but log.
+    // The caller decides: read tools fail open (like audit writes), draft tools fail closed.
     console.warn("mcp rate limit check failed", err instanceof Error ? err.message : "unknown");
-    return null;
+    return "unavailable";
   }
   if ((row?.minute ?? 0) >= grant.ratePerMinute) return "per_minute";
   if ((row?.day ?? 0) >= grant.ratePerDay) return "per_day";
@@ -719,12 +895,17 @@ export const mcpApiHandler = {
         const started = Date.now();
         const tool = TOOLS.find((t) => t.name === params.name);
         // The AI-supplied name is only stored when it is one of ours.
-        const limited = await rateLimitExceeded(env, ctx.auth?.clientId ?? "", grant);
-        const outcome = limited
-          ? rateLimited(limited)
-          : tool
-            ? await callTool(tool, params.arguments, grant.scopes, env)
-            : null;
+        const check = await rateLimitExceeded(env, ctx.auth?.clientId ?? "", grant);
+        // Read tools fail open when the limit cannot be checked; draft tools fail closed (no draft is stored).
+        const limited = check === "unavailable" ? (tool?.scope === "draft" ? check : null) : check;
+        const outcome =
+          limited === "unavailable"
+            ? toolError("rate_check_unavailable")
+            : limited
+              ? rateLimited(limited)
+              : tool
+                ? await callTool(tool, params.arguments, grant.scopes, env, ctx.auth)
+                : null;
         const audit = writeAudit(env, ctx.auth, {
           tool: tool?.name ?? "(unknown)",
           errorCode: outcome ? outcome.errorCode : "unknown_tool",

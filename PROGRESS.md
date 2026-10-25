@@ -41,3 +41,5 @@
 - [x] Task 5.1b-1: ปิด path injection ของ MCP + tool อ่านงาน/หลักฐาน 3 ตัว + mcp_audit
 - [x] Task 5.1b-2: tool รอบปลูก/ผลผลิต/สัญญา/เหตุภัย + rate limit ต่อ client + cache OAuthProvider
 - [x] Task 5.2: settlement preview + what-if ผ่าน MCP
+- [x] Task 5.3a: AI ร่าง → เจ้าของยืนยัน (ai_drafts + tool ร่าง 3 ตัว scope draft · API ยืนยัน/ปฏิเสธ)
+- [ ] Task 5.3b: หน้า web สำหรับเจ้าของยืนยัน/ปฏิเสธร่างของ AI

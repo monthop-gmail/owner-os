@@ -5,7 +5,9 @@ import type { Env } from "../env";
 import { AccessJwtError, verifyAccessJwt } from "./access-jwt";
 import { mcpApiHandler } from "./server";
 
-export const SUPPORTED_SCOPES = ["read", "offline_access"] as const;
+// `draft` lets an AI propose drafts the owner must confirm; it only works once the owner also adds it
+// to the ai_clients row (the default row's ceiling stays `read`).
+export const SUPPORTED_SCOPES = ["read", "offline_access", "draft"] as const;
 export const DEFAULT_REDIRECT_HOSTS = "chatgpt.com,claude.ai";
 
 const CSRF_TTL_SECONDS = 600;
@@ -86,7 +88,7 @@ const SECURITY_HEADERS = {
   "referrer-policy": "no-referrer",
 };
 
-function consentPage(clientName: string, redirectHost: string, csrf: string): string {
+function consentPage(clientName: string, redirectHost: string, scopes: string[], csrf: string): string {
   return `<!doctype html>
 <html lang="th"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>อนุญาตการเข้าถึง · owner-os</title>
@@ -95,7 +97,10 @@ function consentPage(clientName: string, redirectHost: string, csrf: string): st
 <h1>อนุญาตให้แอปเข้าถึง owner-os?</h1>
 <p>แอป: <strong>${escapeHtml(clientName)}</strong></p>
 <p>จะส่งกลับไปที่: <strong>${escapeHtml(redirectHost)}</strong></p>
-<p>สิทธิ์ที่ขอ: <strong>อ่านข้อมูลอย่างเดียว</strong></p>
+<p>สิทธิ์ที่ขอ:</p>
+<ul>
+<li><strong>อ่านข้อมูลอย่างเดียว</strong></li>
+${scopes.includes("draft") ? "<li><strong>เสนอร่างให้เจ้าของยืนยัน (ไม่มีผลจนกว่าจะยืนยัน)</strong></li>\n" : ""}</ul>
 <form method="post" action="/oauth/authorize">
 <input type="hidden" name="csrf" value="${escapeHtml(csrf)}">
 <button type="submit" name="decision" value="approve">อนุญาต</button>
@@ -144,7 +149,7 @@ oauthRoutes.get("/authorize", async (c) => {
     expirationTtl: CSRF_TTL_SECONDS,
   });
   const csrf = `${nonce}.${await hmacHex(cfg.csrfSecret, `${nonce}.${c.get("email")}`)}`;
-  const html = consentPage(client.clientName || client.clientId, new URL(request.redirectUri).hostname, csrf);
+  const html = consentPage(client.clientName || client.clientId, new URL(request.redirectUri).hostname, request.scope, csrf);
   return c.html(html, 200, SECURITY_HEADERS);
 });
 

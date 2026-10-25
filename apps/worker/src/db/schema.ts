@@ -263,3 +263,37 @@ export const mcp_audit = sqliteTable(
 );
 
 export type McpAuditRow = typeof mcp_audit.$inferSelect;
+
+export const AI_DRAFT_KINDS = ["disaster_event", "disaster_prep", "recovery_tasks"] as const;
+export const AI_DRAFT_STATUSES = ["pending", "confirmed", "rejected"] as const;
+
+// AI proposals (MCP scope `draft`). Nothing here touches real data until the owner confirms through
+// /api/ai-drafts (API_TOKEN), which then calls the existing write routes.
+export const ai_drafts = sqliteTable(
+  "ai_drafts",
+  {
+    id: text("id").primaryKey(),
+    kind: text("kind", { enum: AI_DRAFT_KINDS }).notNull(),
+    asset_id: text("asset_id")
+      .notNull()
+      .references(() => assets.id),
+    payload_json: text("payload_json").notNull(),
+    status: text("status", { enum: AI_DRAFT_STATUSES }).notNull().default("pending"),
+    created_at: integer("created_at").notNull(),
+    /** Same opaque hash as the OAuth grant's userId (never the email). */
+    created_by_user_hash: text("created_by_user_hash").notNull(),
+    created_by_client_id: text("created_by_client_id").notNull(),
+    decided_at: integer("decided_at"),
+    decision_note: text("decision_note"),
+    /** What the confirm created, e.g. the disaster event id. */
+    result_ref: text("result_ref"),
+  },
+  (t) => [
+    index("ai_drafts_status_created_at_idx").on(t.status, t.created_at),
+    index("ai_drafts_asset_id_idx").on(t.asset_id),
+    check("ai_drafts_kind_valid", sql`${t.kind} IN ('disaster_event', 'disaster_prep', 'recovery_tasks')`),
+    check("ai_drafts_status_valid", sql`${t.status} IN ('pending', 'confirmed', 'rejected')`),
+  ],
+);
+
+export type AiDraftRow = typeof ai_drafts.$inferSelect;

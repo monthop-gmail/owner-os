@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { requireApiToken } from "./auth";
 import type { Env } from "./env";
 import { createOAuthProvider, oauthRoutes } from "./mcp/oauth";
+import { aiDraftsRoutes } from "./routes/ai-drafts";
 import { assetsRoutes } from "./routes/assets";
 import { assetContractsRoutes, contractsRoutes } from "./routes/contracts";
 import { cropCyclesRoutes, cropTemplatesRoutes, unitCropCyclesRoutes } from "./routes/crop-cycles";
@@ -41,6 +42,8 @@ app.route("/api/contracts", contractsRoutes);
 app.route("/api/assets", assetDisasterRoutes);
 app.route("/api/disaster-events", disasterEventsRoutes);
 app.route("/api/crop-cycles", cycleDisasterRoutes);
+// Owner confirms/rejects AI drafts (API_TOKEN only; MCP tokens are rejected by requireApiToken).
+app.route("/api/ai-drafts", aiDraftsRoutes);
 
 const defaultHandler = { fetch: (request: Request, env: Env, ctx: ExecutionContext) => app.fetch(request, env, ctx) };
 
