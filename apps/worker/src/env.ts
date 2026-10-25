@@ -17,6 +17,8 @@ export type Env = {
   OWNER_EMAILS?: string;
   /** Comma-separated hosts allowed in DCR/authorize redirect_uri (https only). */
   MCP_ALLOWED_REDIRECT_HOSTS?: string;
+  /** Dynamic client registration (/oauth/register) is accepted only when exactly "true". Default "false". */
+  MCP_DCR_ENABLED?: string;
   /** HMAC key for one-time consent CSRF tokens (Worker secret). */
   CONSENT_CSRF_SECRET?: string;
 };

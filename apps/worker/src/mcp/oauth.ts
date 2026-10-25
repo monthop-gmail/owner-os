@@ -1,4 +1,4 @@
-import OAuthProvider, { type AuthRequest, type OAuthProviderOptions } from "@cloudflare/workers-oauth-provider";
+import OAuthProvider, { type AuthRequest, type ClientInfo, type OAuthProviderOptions } from "@cloudflare/workers-oauth-provider";
 import { Hono } from "hono";
 import { tokensEqual } from "../auth";
 import type { Env } from "../env";
@@ -11,6 +11,8 @@ export const SUPPORTED_SCOPES = ["read", "offline_access", "draft"] as const;
 export const DEFAULT_REDIRECT_HOSTS = "chatgpt.com,claude.ai";
 
 const CSRF_TTL_SECONDS = 600;
+/** A client with no ai_clients row (never approved) can only be approved this soon after DCR registration. */
+export const NEW_CLIENT_APPROVAL_WINDOW_SECONDS = 15 * 60;
 const CSRF_KV_PREFIX = "consent_csrf:";
 const encoder = new TextEncoder();
 
@@ -88,15 +90,47 @@ const SECURITY_HEADERS = {
   "referrer-policy": "no-referrer",
 };
 
-function consentPage(clientName: string, redirectHost: string, scopes: string[], csrf: string): string {
+type ClientStatus = "pinned" | "new";
+
+/**
+ * Consent phishing guard. An approved client (ai_clients row with its client_id) may re-consent; a revoked
+ * one may not (re-consent must not restore access); an unknown one only within NEW_CLIENT_APPROVAL_WINDOW_SECONDS
+ * of its DCR registration, so a link prepared earlier by someone else cannot be approved later.
+ */
+async function clientStatus(env: Env, client: ClientInfo): Promise<ClientStatus | "client_revoked" | "client_not_approved"> {
+  const row = await env.DB.prepare("SELECT revoked_at FROM ai_clients WHERE client_id = ?")
+    .bind(client.clientId)
+    .first<{ revoked_at: number | null }>();
+  if (row) return row.revoked_at === null ? "pinned" : "client_revoked";
+  const registered = client.registrationDate; // Unix seconds (workers-oauth-provider)
+  const now = Math.floor(Date.now() / 1000);
+  if (typeof registered === "number" && registered <= now && now - registered <= NEW_CLIENT_APPROVAL_WINDOW_SECONDS) return "new";
+  return "client_not_approved";
+}
+
+function registeredAtTh(client: ClientInfo): string {
+  if (typeof client.registrationDate !== "number") return "ไม่ทราบ";
+  return new Date(client.registrationDate * 1000).toLocaleString("th-TH", {
+    dateStyle: "medium",
+    timeStyle: "medium",
+    timeZone: "Asia/Bangkok",
+  });
+}
+
+function consentPage(client: ClientInfo, status: ClientStatus, redirectUri: string, scopes: string[], csrf: string): string {
+  const badge = status === "new" ? "client ใหม่ ยังไม่เคยอนุญาต" : "เคยอนุญาตแล้ว";
   return `<!doctype html>
 <html lang="th"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>อนุญาตการเข้าถึง · owner-os</title>
-<style>body{font-family:system-ui,sans-serif;max-width:32rem;margin:3rem auto;padding:0 1rem}button{font-size:1rem;padding:.5rem 1.25rem;margin-right:.5rem}</style>
+<style>body{font-family:system-ui,sans-serif;max-width:36rem;margin:3rem auto;padding:0 1rem}button{font-size:1rem;padding:.5rem 1.25rem;margin-right:.5rem}code{word-break:break-all}.warn{border:2px solid #b45309;background:#fffbeb;padding:.75rem;border-radius:.5rem}</style>
 </head><body>
 <h1>อนุญาตให้แอปเข้าถึง owner-os?</h1>
-<p>แอป: <strong>${escapeHtml(clientName)}</strong></p>
-<p>จะส่งกลับไปที่: <strong>${escapeHtml(redirectHost)}</strong></p>
+<p class="warn"><strong>กดอนุญาตเฉพาะเมื่อคุณเพิ่งกดเชื่อมต่อเองเมื่อสักครู่ ถ้าได้ลิงก์นี้จากคนอื่น ให้กดปฏิเสธ</strong></p>
+<p>สถานะ: <strong>${escapeHtml(badge)}</strong></p>
+<p>แอป (ชื่อที่แอปตั้งเอง): <strong>${escapeHtml(client.clientName || "-")}</strong></p>
+<p>client_id: <code>${escapeHtml(client.clientId)}</code></p>
+<p>ลงทะเบียนเมื่อ: <strong>${escapeHtml(registeredAtTh(client))}</strong> (เวลาไทย)</p>
+<p>จะส่งกลับไปที่ (redirect_uri): <code>${escapeHtml(redirectUri)}</code></p>
 <p>สิทธิ์ที่ขอ:</p>
 <ul>
 <li><strong>อ่านข้อมูลอย่างเดียว</strong></li>
@@ -142,6 +176,8 @@ oauthRoutes.get("/authorize", async (c) => {
   const client = await helpers.lookupClient(authRequest.clientId);
   if (!client) return c.json({ error: "invalid_client" }, 400);
   if (!isAllowedRedirectUri(authRequest.redirectUri, c.env)) return c.json({ error: "invalid_redirect_uri" }, 400);
+  const status = await clientStatus(c.env, client);
+  if (status === "client_revoked" || status === "client_not_approved") return c.json({ error: status }, 403);
 
   const request: AuthRequest = { ...authRequest, scope: filterScopes(authRequest.scope) };
   const nonce = crypto.randomUUID();
@@ -149,7 +185,7 @@ oauthRoutes.get("/authorize", async (c) => {
     expirationTtl: CSRF_TTL_SECONDS,
   });
   const csrf = `${nonce}.${await hmacHex(cfg.csrfSecret, `${nonce}.${c.get("email")}`)}`;
-  const html = consentPage(client.clientName || client.clientId, new URL(request.redirectUri).hostname, request.scope, csrf);
+  const html = consentPage(client, status, request.redirectUri, request.scope, csrf);
   return c.html(html, 200, SECURITY_HEADERS);
 });
 
@@ -171,6 +207,12 @@ oauthRoutes.post("/authorize", async (c) => {
   if (boundEmail !== email) return c.json({ error: "invalid_csrf" }, 403);
   // Re-check in case the allowlist changed between GET and POST.
   if (!isAllowedRedirectUri(request.redirectUri, c.env)) return c.json({ error: "invalid_redirect_uri" }, 400);
+  const helpers = c.env.OAUTH_PROVIDER!;
+  const client = await helpers.lookupClient(request.clientId);
+  if (!client) return c.json({ error: "invalid_client" }, 400);
+  // Checked again on POST: the client may have been revoked, or its approval window passed, since the GET.
+  const status = await clientStatus(c.env, client);
+  if (status === "client_revoked" || status === "client_not_approved") return c.json({ error: status }, 403);
 
   if (form.decision !== "approve") {
     const url = new URL(request.redirectUri);
@@ -187,12 +229,10 @@ oauthRoutes.post("/authorize", async (c) => {
     .bind(request.clientId, Date.now())
     .run();
 
-  const helpers = c.env.OAUTH_PROVIDER!;
-  const client = await helpers.lookupClient(request.clientId);
   const { redirectTo } = await helpers.completeAuthorization({
     request,
     userId: await opaqueUserId(email),
-    metadata: { clientName: client?.clientName ?? request.clientId },
+    metadata: { clientName: client.clientName ?? request.clientId },
     scope: request.scope,
     props: { email },
   });
@@ -219,6 +259,10 @@ export function createOAuthProvider(
     requiredScopes: ["read"],
     resourceMetadata: { resource: `${origin}/mcp`, authorization_servers: [origin], resource_name: "owner-os" },
     clientRegistrationCallback: ({ clientMetadata }) => {
+      // DCR is off unless the owner sets MCP_DCR_ENABLED to exactly "true" while connecting a connector.
+      if (env.MCP_DCR_ENABLED !== "true") {
+        return { code: "registration_disabled", description: "client registration is disabled", status: 403 };
+      }
       const uris = clientMetadata.redirect_uris;
       if (!Array.isArray(uris) || uris.length === 0 || !uris.every((u) => isAllowedRedirectUri(u, env))) {
         return { code: "invalid_redirect_uri", description: "redirect_uris must be https on an allowed host" };
