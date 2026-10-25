@@ -43,3 +43,4 @@
 - [x] Task 5.2: settlement preview + what-if ผ่าน MCP
 - [x] Task 5.3a: AI ร่าง → เจ้าของยืนยัน (ai_drafts + tool ร่าง 3 ตัว scope draft · API ยืนยัน/ปฏิเสธ)
 - [x] Task 5.3b: หน้า web สำหรับเจ้าของยืนยัน/ปฏิเสธร่างของ AI
+- [x] Task 5.4a: ai_clients ต่อ DCR client — เพดานสิทธิ์/ตัดสิทธิ์/rate limit แยกต่อ client

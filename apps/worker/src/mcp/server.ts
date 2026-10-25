@@ -791,19 +791,30 @@ async function writeAudit(
 
 type ClientGrant = { scopes: string[]; ratePerMinute: number; ratePerDay: number };
 
-/** Effective scopes = token scopes ∩ the `mcp-default` row's scopes, plus its rate limits; null when missing or revoked. */
-async function clientGrant(env: Env, tokenScopes: string[]): Promise<ClientGrant | null> {
-  const row = await env.DB.prepare(
-    "SELECT scopes, revoked_at, rate_per_minute, rate_per_day FROM ai_clients WHERE name = ?",
-  )
-    .bind(MCP_DEFAULT_CLIENT)
-    .first<{ scopes: string; revoked_at: number | null; rate_per_minute: number; rate_per_day: number }>();
-  if (!row || row.revoked_at !== null) return null;
-  const allowed = row.scopes.split(/[\s,]+/).filter(Boolean);
+type ClientRow = { scopes: string; revoked_at: number | null; rate_per_minute: number; rate_per_day: number };
+
+const rowScopes = (row: ClientRow) => row.scopes.split(/[\s,]+/).filter(Boolean);
+
+/**
+ * Effective scopes = token ∩ the global `mcp-default` row ∩ this DCR client's own row; rate limits come from
+ * the client row. Fail-closed: null when either row is missing or revoked (never falls back to the global row).
+ */
+async function clientGrant(env: Env, tokenScopes: string[], clientId: string | undefined): Promise<ClientGrant | null> {
+  if (!clientId) return null;
+  const select = "SELECT scopes, revoked_at, rate_per_minute, rate_per_day FROM ai_clients WHERE ";
+  const [global, client] = await env.DB.batch<ClientRow>([
+    env.DB.prepare(`${select}name = ? AND client_id IS NULL`).bind(MCP_DEFAULT_CLIENT),
+    env.DB.prepare(`${select}client_id = ?`).bind(clientId),
+  ]);
+  const g = global?.results[0];
+  const c = client?.results[0];
+  if (!g || g.revoked_at !== null || !c || c.revoked_at !== null) return null;
+  const globalScopes = rowScopes(g);
+  const clientScopes = rowScopes(c);
   return {
-    scopes: tokenScopes.filter((s) => allowed.includes(s)),
-    ratePerMinute: row.rate_per_minute,
-    ratePerDay: row.rate_per_day,
+    scopes: tokenScopes.filter((s) => globalScopes.includes(s) && clientScopes.includes(s)),
+    ratePerMinute: c.rate_per_minute,
+    ratePerDay: c.rate_per_day,
   };
 }
 
@@ -843,7 +854,7 @@ type McpContext = ExecutionContext & { auth?: McpAuth };
 /** OAuthProvider apiHandler: only reached with a valid access token for /mcp. */
 export const mcpApiHandler = {
   async fetch(request: Request, env: Env, ctx: McpContext): Promise<Response> {
-    const grant = await clientGrant(env, ctx.auth?.scope ?? []);
+    const grant = await clientGrant(env, ctx.auth?.scope ?? [], ctx.auth?.clientId);
     if (!grant) {
       return Response.json(
         { error: "client_revoked" },

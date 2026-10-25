@@ -26,7 +26,7 @@ beforeAll(async () => {
   expect(summary.failures).toEqual([]);
   accessToken = (await obtainToken()).access_token;
   // This suite makes far more than 60 tool calls a minute; the rate-limit block sets its own limits.
-  await env.DB.prepare("UPDATE ai_clients SET rate_per_minute = 100000, rate_per_day = 100000 WHERE name = 'mcp-default'").run();
+  await env.DB.prepare("UPDATE ai_clients SET rate_per_minute = 100000, rate_per_day = 100000 WHERE client_id IS NOT NULL").run();
   // Seed + RSA key generation + full OAuth flow can exceed the 10 s default when all suites run in parallel.
 }, 60_000);
 
@@ -202,7 +202,7 @@ describe("tools", () => {
         body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "list_assets" } }),
       }),
       { ...env, API_TOKEN: undefined },
-      Object.assign(Object.create(ctx) as ExecutionContext, { auth: { scope: ["read"] } }),
+      Object.assign(Object.create(ctx) as ExecutionContext, { auth: { scope: ["read"], clientId } }),
     );
     const body = (await res.json()) as RpcBody;
     expect(errorCode(body.result as unknown as ToolResult)).toBe("server_not_configured");
@@ -217,7 +217,7 @@ describe("scope and revocation", () => {
         body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "list_assets" } }),
       }),
       env,
-      Object.assign(Object.create(ctx) as ExecutionContext, { auth: { scope: ["offline_access"] } }),
+      Object.assign(Object.create(ctx) as ExecutionContext, { auth: { scope: ["offline_access"], clientId } }),
     );
     const text = await res.clone().text();
     seenBodies.push(text);
@@ -491,7 +491,7 @@ describe("rate limit per DCR client", () => {
   }
 
   async function setRates(perMinute: number, perDay: number): Promise<void> {
-    await env.DB.prepare("UPDATE ai_clients SET rate_per_minute = ?, rate_per_day = ? WHERE name = 'mcp-default'")
+    await env.DB.prepare("UPDATE ai_clients SET rate_per_minute = ?, rate_per_day = ? WHERE client_id IS NOT NULL")
       .bind(perMinute, perDay)
       .run();
   }
