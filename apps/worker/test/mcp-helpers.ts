@@ -141,6 +141,7 @@ export async function setupOAuthHarness(): Promise<Env> {
     ACCESS_AUD: AUD,
     OWNER_EMAILS: `${OWNER}, other-owner@example.com`,
     MCP_ALLOWED_REDIRECT_HOSTS: "chatgpt.com,claude.ai",
+    MCP_DCR_ENABLED: "true",
     CONSENT_CSRF_SECRET: "test-csrf-secret-not-real",
   };
   const params = { name: "RSASSA-PKCS1-v1_5", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" };

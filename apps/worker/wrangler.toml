@@ -25,3 +25,5 @@ ACCESS_TEAM_DOMAIN = ""
 ACCESS_AUD = ""
 OWNER_EMAILS = ""
 MCP_ALLOWED_REDIRECT_HOSTS = "chatgpt.com,claude.ai"
+# Set to "true" only while connecting a connector (then back to "false"): /oauth/register is refused otherwise.
+MCP_DCR_ENABLED = "false"

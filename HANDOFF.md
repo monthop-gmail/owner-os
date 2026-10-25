@@ -43,7 +43,7 @@ packages/shared  types + Zod schemas + settlement engine + แม่แบบง
   - `/mcp` ใช้ OAuth token เท่านั้น
   - token สองแบบนี้ใช้แทนกันไม่ได้ (มีเทสต์ตรวจว่า OAuth token เรียก `/api/*` แล้วได้ 401)
 
-### ตาราง D1 (13 ตาราง · 12 migration `0000`–`0011` · ไม่มีการแก้ migration เดิม)
+### ตาราง D1 (13 ตาราง · 13 migration `0000`–`0012` · ไม่มีการแก้ migration เดิม)
 
 | ตาราง | หน้าที่ |
 |---|---|
@@ -57,7 +57,7 @@ packages/shared  types + Zod schemas + settlement engine + แม่แบบง
 | `disaster_events` | เหตุภัยต่อสินทรัพย์ (ประเภท · เวลา) + เวลาที่สร้างงานฟื้นฟูแล้ว |
 | `disaster_event_units` | แปลงที่โดนภัย + % ความเสียหาย (เก็บเป็น basis points) |
 | `disaster_event_evidence` | ผูกรูปหลักฐาน (GPS) กับเหตุภัย ใช้ประกอบการเคลม |
-| `ai_clients` | เพดานสิทธิ์และ rate limit ของ AI (`0008` ใส่แถว `mcp-default` scope `read`) |
+| `ai_clients` | สวิตช์/เพดานรวมของ AI (แถว `mcp-default` จาก `0008` scope `read`) + แถวต่อ DCR client (`client_id` · `0012`) สำหรับเพดาน ตัดสิทธิ์ และ rate limit ของ client นั้น |
 | `mcp_audit` | log ทุก tool call ของ MCP (ไม่เก็บ argument/ผลลัพธ์/อีเมล) |
 | `ai_drafts` | ร่างที่ AI เสนอ รอเจ้าของยืนยันหรือปฏิเสธ |
 
@@ -86,7 +86,7 @@ pnpm install --frozen-lockfile
 # 2) Worker: secret สำหรับเครื่องนี้ + migration ลง D1 local (ใน .wrangler/)
 cd apps/worker
 cp .dev.vars.example .dev.vars   # API_TOKEN / CONSENT_CSRF_SECRET ค่า local-only (อย่าใช้ค่านี้บน production)
-pnpm db:migrate:local            # apply 0000–0011 ทั้ง 12 ไฟล์
+pnpm db:migrate:local            # apply 0000–0012 ทั้ง 13 ไฟล์
 
 # 3) เปิด Worker (อ่าน .dev.vars อัตโนมัติ) ที่ http://localhost:8787
 pnpm exec wrangler dev --local
@@ -212,11 +212,22 @@ settlement ทั้งหมดเป็น **preview** (`POST /api/contracts/:
 - **Endpoint:** `https://<worker-host>/mcp` เป็น MCP แบบ JSON-RPC 2.0 แบบ stateless ตอบ `application/json`
 - **การเชื่อมต่อของ AI** (ChatGPT/Claude ตั้ง header เองไม่ได้ จึงใช้ OAuth 2.1):
   - ลงทะเบียนผ่าน `/oauth/register` (DCR) → `/oauth/authorize` → `/oauth/token` (PKCE S256)
+  - **DCR ปิดเป็นค่าเริ่มต้น:** `/oauth/register` รับเฉพาะเมื่อ `MCP_DCR_ENABLED` เป็น `"true"` ตรงตัว (ไม่งั้นได้ 403 `registration_disabled`)
+    · เจ้าของเปิดชั่วคราวตอนกดเชื่อม connector เอง แล้วปิดกลับ (ดูข้อ 8)
   - redirect_uri ต้องเป็น https และ host ต้องอยู่ใน `MCP_ALLOWED_REDIRECT_HOSTS`
 - **หน้า consent** (`/oauth/authorize`):
   - อยู่หลัง **Cloudflare Access**: ตรวจ JWT `Cf-Access-Jwt-Assertion` แบบ RS256 และอีเมลต้องอยู่ใน `OWNER_EMAILS`
   - CSRF ใช้ครั้งเดียว
   - ถ้าขาด config ใดจะตอบ 503
+  - **กัน consent phishing** (callback ของ chatgpt.com/claude.ai เป็น path ร่วมของทุกบัญชี ใครก็ลงทะเบียน client ที่ชี้ไปที่นั่นได้):
+    - client ที่เคยอนุญาตแล้ว (มีแถว `ai_clients` ตาม `client_id`) → ขอ consent ใหม่ได้
+    - client ที่ถูกตัดสิทธิ์ → 403 `client_revoked` (กด consent ใหม่เพื่อกู้สิทธิ์ไม่ได้)
+    - client ที่ยังไม่เคยอนุญาต → อนุญาตได้เฉพาะภายใน 15 นาทีหลังลงทะเบียน DCR ไม่งั้น 403 `client_not_approved`
+    - ตรวจทั้งตอนเปิดหน้า (GET) และตอนกดอนุญาต/ปฏิเสธ (POST)
+    - หน้า consent แสดงชื่อแอป (แอปตั้งเอง) · `client_id` · เวลาที่ลงทะเบียน (เวลาไทย) · redirect_uri เต็มรวม path
+      · ป้าย "client ใหม่ ยังไม่เคยอนุญาต" / "เคยอนุญาตแล้ว"
+      · และคำเตือน "กดอนุญาตเฉพาะเมื่อคุณเพิ่งกดเชื่อมต่อเองเมื่อสักครู่ ถ้าได้ลิงก์นี้จากคนอื่น ให้กดปฏิเสธ"
+  - เมื่อกดอนุญาตครั้งแรก ระบบสร้างแถว `client:<client_id>` ใน `ai_clients` ด้วย scope `read` (แถวที่มีอยู่แล้วจะไม่ถูกเขียนทับหรืออัปเกรด)
 - **tool 15 ตัว** (`apps/worker/src/mcp/server.ts`):
   - **อ่าน** (scope `read`) 10 ตัว: `list_assets` · `get_asset` · `list_work_orders` · `get_work_order` · `list_evidence` · `list_crop_cycles` · `list_harvest_logs` · `list_contracts` · `list_disaster_events` · `get_disaster_impact`
     - เรียก route `GET /api/...` เดิมภายใน Worker
@@ -232,14 +243,19 @@ settlement ทั้งหมดเป็น **preview** (`POST /api/contracts/:
     - MCP token เรียก `/api/ai-drafts/*` ไม่ได้
     - เมื่อยืนยัน ระบบเรียก route เขียนเดิม
     - pending ได้ไม่เกิน 20 ร่างต่อสินทรัพย์
+- **สิทธิ์แยกต่อ client:**
+  - แถว `mcp-default` (`client_id` ว่าง) = สวิตช์รวม + เพดานรวม · แถว `client:<client_id>` = เพดาน ตัดสิทธิ์ และ rate limit ของ client นั้น
+  - สิทธิ์ที่ใช้จริง = scope ของ token ∩ scope แถวรวม ∩ scope แถวของ client
+  - ไม่มีแถวของ client หรือแถวใดถูก revoke → ถูกปฏิเสธ (401 · ไม่ fallback ไปใช้แถวรวม)
 - **scope `draft` ปิดเป็นค่าเริ่มต้น:**
-  - แถว `mcp-default` ใน `ai_clients` มีเพดาน `read`
-  - ถ้าเจ้าของต้องการให้ AI เสนอร่าง ต้อง UPDATE แถวนั้นเป็น `read,draft` เอง
-  - สิทธิ์ที่ใช้จริงคือ scope ของ token ∩ เพดานในแถว
+  - แถว `mcp-default` และแถวของ client ที่สร้างตอนอนุญาตมีเพดาน `read`
+  - ถ้าเจ้าของต้องการให้ AI ตัวใดเสนอร่าง ต้อง UPDATE **ทั้งแถว `mcp-default` และแถว `client:<client_id>` ของ client นั้น** เป็น `read,draft` เอง
+    (client อื่นที่แถวยังเป็น `read` จะยังเสนอร่างไม่ได้)
 - **ควบคุมและตรวจสอบ:**
   - ทุก tool call ลง `mcp_audit` (เก็บ user hash · client_id · tool · ok/error_code · ms)
-  - rate limit ต่อ client มาจาก `rate_per_minute`/`rate_per_day` ของแถว (ค่าเริ่มต้น 60 / 5000)
+  - rate limit ต่อ client มาจาก `rate_per_minute`/`rate_per_day` ของแถว `client:<client_id>` (ค่าเริ่มต้น 60 / 5000)
   - ถ้าเช็ก rate limit ไม่ได้: tool อ่าน fail-open · tool ร่าง fail-closed
+  - ตัดสิทธิ์ AI ทีละตัว: ตั้ง `revoked_at` ของแถว `client:<client_id>` (client อื่นใช้ต่อได้)
   - ตัดสิทธิ์ AI ทั้งหมด: ตั้ง `revoked_at` ของแถว `mcp-default`
 
 ## 8. deploy บน Cloudflare (เช็กลิสต์ · ใส่ค่าจริงเองตอน deploy)
@@ -261,10 +277,11 @@ settlement ทั้งหมดเป็น **preview** (`POST /api/contracts/:
    - `ACCESS_AUD` (audience tag ของ Access application)
    - `OWNER_EMAILS` (คั่นด้วย `,`)
    - `MCP_ALLOWED_REDIRECT_HOSTS` (ค่าเริ่มต้น `chatgpt.com,claude.ai`)
+   - `MCP_DCR_ENABLED` (ค่าเริ่มต้น `"false"` = ปิดการลงทะเบียน client ใหม่)
 6. **Cloudflare Access:**
    - สร้าง application ครอบ path `/oauth/authorize` และใส่ policy ให้เฉพาะอีเมลเจ้าของ
    - ห้ามครอบ `/oauth/token`, `/oauth/register`, `/.well-known/*` และ `/mcp` เพราะ AI ต้องเรียกได้โดยตรง
-7. **Migration remote ทั้งหมด:** `cd apps/worker && pnpm exec wrangler d1 migrations apply owner-os --remote` (0000–0011 ซึ่งรวมแถว `mcp-default`)
+7. **Migration remote ทั้งหมด:** `cd apps/worker && pnpm exec wrangler d1 migrations apply owner-os --remote` (0000–0012 ซึ่งรวมแถว `mcp-default`)
 8. **Deploy:** `pnpm exec wrangler deploy` (ใน `apps/worker`) · เว็บ build ด้วย `pnpm --filter @owner-os/web build` ได้ `apps/web/dist`
    · repo ยังไม่มี config deploy ของเว็บ โฮสต์ที่ใช้ต้องส่ง `/api` ไปยัง Worker origin เดียวกัน (ตอน dev ใช้ proxy ของ Vite)
 9. **Smoke test:**
@@ -275,6 +292,13 @@ settlement ทั้งหมดเป็น **preview** (`POST /api/contracts/:
    - `GET /.well-known/oauth-authorization-server` ต้องได้ metadata
    - เปิด `/oauth/authorize` ต้องถูก Access ถามตัวตน
    - (ไม่บังคับ) `OWNER_OS_URL=https://<worker-host> OWNER_OS_TOKEN=<API_TOKEN> pnpm seed:demo` ใส่ demo
+   - `POST /oauth/register` ต้องได้ 403 `registration_disabled` (DCR ปิดอยู่)
+10. **เชื่อม AI connector** (ทำทีละตัว):
+    - ตั้ง `MCP_DCR_ENABLED = "true"` ชั่วคราว (dashboard หรือ `wrangler.toml` แล้ว deploy)
+    - กดเชื่อม connector ใน ChatGPT/Claude **ด้วยตัวเอง** แล้วกดอนุญาตภายใน 15 นาที
+      (ตรวจว่า client_id และ redirect_uri ในหน้า consent ตรงกับที่เพิ่งเชื่อม)
+    - ตั้ง `MCP_DCR_ENABLED` กลับเป็น `"false"` ทันทีหลังเชื่อมเสร็จ
+    - ถ้าจะให้ AI ตัวนั้นเสนอร่าง: UPDATE แถว `mcp-default` และแถว `client:<client_id>` เป็น `read,draft`
 
 ## 9. ต้องยืนยันก่อนใช้จริง
 
@@ -285,7 +309,9 @@ settlement ทั้งหมดเป็น **preview** (`POST /api/contracts/:
 - **ความคุ้มครองประกันจริง:** ระบบรับยอดเงินประกันที่กรอกเท่านั้น ยังไม่รู้เงื่อนไขกรมธรรม์ (`insurance_recipient` ค่าเริ่มต้นเป็น `pool`)
 - **ข้อมูลที่ AI อ่าน** (ผ่าน MCP) จะไปอยู่กับผู้ให้บริการ AI ตามนโยบายของผู้ให้บริการนั้น
   - พิกัดและรูปเป็นค่าที่ภาคสนามแจ้ง
-  - เจ้าของควรตัดสินใจก่อนว่าจะเปิด MCP และจะเปิด scope `draft` หรือไม่
+  - เจ้าของควรตัดสินใจก่อนว่าจะเปิด MCP และจะเปิด scope `draft` ให้ client ใด (สิทธิ์แยกต่อ client: ต้อง UPDATE ทั้งแถว `mcp-default` และแถว `client:<client_id>`)
+- **การจัดการ AI client:** ตัดสิทธิ์ทีละ client ได้ที่แถว `client:<client_id>` · ปิด DCR (`MCP_DCR_ENABLED = "false"`) ไว้ตลอดยกเว้นตอนเชื่อม connector เอง
+  · ยังไม่มีหน้าเว็บจัดการ client ต้องแก้ตาราง `ai_clients` ด้วย SQL (`wrangler d1 execute`)
 - **geofence** ใช้ความแม่นยำ GPS ไม่เกิน 100 ม. และ buffer 15 ม. ค่าทั้งสองตั้งในโค้ด (`src/routes/tasks.ts`) ควรยืนยันว่าเหมาะกับพื้นที่จริง
 
 ## 10. ยังไม่ทำ / backlog
@@ -303,7 +329,7 @@ settlement ทั้งหมดเป็น **preview** (`POST /api/contracts/:
   - rate limit ของ MCP นับจาก `mcp_audit` แบบอ่านแล้วตัดสิน (ไม่ atomic) จึงอาจเกินเล็กน้อยเมื่อเรียกพร้อมกัน
   - `settlement_what_if` บนสัญญา turnkey ที่ base ใช้ `crop_cycle_id` แต่ไม่ส่ง `period_months` มา: สถานการณ์ที่ปรับรายได้จะได้ error `period_months_required` (ต้องใส่ `period_months` ใน base)
   - กล่องร่างบนเว็บแสดงแปลงเป็น id (payload มีแค่ `unit_id`)
-  - หัวข้อ "ใช้จาก AI (MCP)" ใน README ยังเขียนว่ามีแค่ `list_assets`/`get_asset` ให้ยึดรายการในข้อ 7 ของเอกสารนี้
+  - `MCP_DCR_ENABLED` ถูกอ่านตอนสร้าง OAuthProvider ซึ่ง cache ต่อ isolate (`getOAuthProvider` ใน `src/index.ts` ใช้ key เป็น origin + `MCP_ALLOWED_REDIRECT_HOSTS`) บน Cloudflare การเปลี่ยน var จะสร้าง deployment ใหม่จึงมีผลทันที แต่ตอน `wrangler dev` ต้องรีสตาร์ต
   - ยังไม่ได้ทดสอบ `/test-camera` บนมือถือจริงผ่าน HTTPS (รอ deploy)
 
 ## 11. วิธีทำงานของทีมเรา
