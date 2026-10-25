@@ -1,8 +1,8 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import fixtureJson from "../fixtures/demo-seed.json";
 import { app } from "../src/index";
 import { resetAccessCertsCache } from "../src/mcp/access-jwt";
-import { DEFAULT_PROTOCOL_VERSION, INSTRUCTIONS, mcpApiHandler } from "../src/mcp/server";
+import { apiPath, DEFAULT_PROTOCOL_VERSION, INSTRUCTIONS, isSafeInternalPath, mcpApiHandler } from "../src/mcp/server";
 import { seedDemo, type DemoFixture } from "../src/seed/demo";
 import { authHeader, TEST_API_TOKEN } from "./d1";
 import { call, ctx, env, obtainToken, setupOAuthHarness, teardownOAuthHarness } from "./mcp-helpers";
@@ -124,9 +124,9 @@ describe("JSON-RPC lifecycle", () => {
 });
 
 describe("tools", () => {
-  it("tools/list has the two read-only tools", async () => {
+  it("tools/list has the five read-only tools", async () => {
     const tools = (await rpc("tools/list")).result?.tools as { name: string; annotations: unknown; inputSchema: Record<string, unknown> }[];
-    expect(tools.map((t) => t.name)).toEqual(["list_assets", "get_asset"]);
+    expect(tools.map((t) => t.name)).toEqual(["list_assets", "get_asset", "list_work_orders", "get_work_order", "list_evidence"]);
     for (const t of tools) {
       expect(t.annotations).toEqual({ readOnlyHint: true });
       expect(t.inputSchema).toMatchObject({ type: "object", additionalProperties: false });
@@ -221,5 +221,42 @@ describe("scope and revocation", () => {
     } finally {
       await env.DB.prepare("UPDATE ai_clients SET revoked_at = NULL WHERE name = 'mcp-default'").run();
     }
+  });
+});
+
+describe("P2: tool arguments cannot steer the internal path", () => {
+  it.each([".", "..", "../tasks/x", "a/b", "x?y=1", "", "%2e%2e", "a".repeat(65), " a", "a#b"])(
+    "get_asset %j → validation_error without any internal request",
+    async (assetId) => {
+      const spy = vi.spyOn(app, "request");
+      try {
+        expect(errorCode(await callTool("get_asset", { asset_id: assetId }))).toBe("validation_error");
+        expect(spy).not.toHaveBeenCalled();
+      } finally {
+        spy.mockRestore();
+      }
+    },
+  );
+
+  it("a valid id makes exactly one internal GET", async () => {
+    const spy = vi.spyOn(app, "request");
+    try {
+      await callTool("get_asset", { asset_id: "A".repeat(64) });
+      expect(spy).toHaveBeenCalledTimes(1);
+      expect(spy.mock.calls[0]?.[0]).toBe(`/api/assets/${"A".repeat(64)}`);
+      expect((spy.mock.calls[0]?.[1] as RequestInit).method).toBe("GET");
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("apiPath / isSafeInternalPath reject traversal and prefix escapes", () => {
+    expect(apiPath("api", "assets")).toBe("/api/assets");
+    expect(isSafeInternalPath("/api/assets/abc", "/api/assets")).toBe(true);
+    expect(isSafeInternalPath("/api/assets/../tasks", "/api/assets")).toBe(false);
+    expect(isSafeInternalPath("/api/assets/./x", "/api/assets")).toBe(false);
+    expect(isSafeInternalPath("/api/assetsX", "/api/assets")).toBe(false);
+    expect(isSafeInternalPath("//evil.example/api/assets", "/api/assets")).toBe(false);
+    expect(isSafeInternalPath("/api/tasks/x", "/api/assets")).toBe(false);
   });
 });

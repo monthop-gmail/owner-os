@@ -1,6 +1,7 @@
 // Stateless MCP server over JSON-RPC 2.0 (POST /mcp, application/json responses only).
 // Tools are read-only and call the existing Hono /api routes in-process with API_TOKEN,
 // so the API token never reaches the AI client.
+import { WORK_ORDER_STATUSES } from "../db/schema";
 import type { Env } from "../env";
 import { app } from "../index";
 
@@ -21,9 +22,63 @@ type Tool = {
   inputSchema: Record<string, unknown>;
   annotations: { readOnlyHint: true };
   scope: "read";
-  /** Returns the /api path to GET, or null when the arguments are invalid. */
+  /** Every internal path this tool builds must start with this prefix. */
+  prefix: string;
+  /** Returns the /api path (+ query) to GET, built only with apiPath/withQuery; null when the arguments are invalid. */
   path(args: Record<string, unknown>): string | null;
 };
+
+const WORK_ORDER_STATUS_VALUES: readonly string[] = WORK_ORDER_STATUSES;
+const SAFE_SEGMENT = /^[A-Za-z0-9_-]{1,64}$/;
+
+/** A path segment taken from tool arguments; validated by apiPath. */
+class ArgSegment {
+  constructor(readonly value: unknown) {}
+}
+const arg = (value: unknown) => new ArgSegment(value);
+
+/**
+ * Joins constant segments and argument segments into `/a/b/c`. Argument segments must match
+ * SAFE_SEGMENT, so ".", "..", "/", "?", "%" and empty values can never reach the router.
+ */
+export function apiPath(...segments: (string | ArgSegment)[]): string | null {
+  const parts: string[] = [];
+  for (const seg of segments) {
+    if (seg instanceof ArgSegment) {
+      if (typeof seg.value !== "string" || !SAFE_SEGMENT.test(seg.value)) return null;
+      parts.push(seg.value);
+    } else {
+      parts.push(seg);
+    }
+  }
+  return `/${parts.join("/")}`;
+}
+
+/** Appends a query built with URLSearchParams from already-validated values (undefined entries skipped). */
+function withQuery(path: string | null, query: Record<string, string | undefined>): string | null {
+  if (path === null) return null;
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(query)) if (value !== undefined) params.set(key, value);
+  const qs = params.toString();
+  return qs ? `${path}?${qs}` : path;
+}
+
+/** The final path must survive URL parsing unchanged (no normalisation) and stay under the tool's prefix. */
+export function isSafeInternalPath(path: string, prefix: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(path, "http://internal");
+  } catch {
+    return false;
+  }
+  if (url.origin !== "http://internal" || `${url.pathname}${url.search}` !== path) return false;
+  return url.pathname === prefix || url.pathname.startsWith(`${prefix}/`);
+}
+
+/** Arguments may only contain these keys. */
+function onlyKeys(args: Record<string, unknown>, allowed: string[]): boolean {
+  return Object.keys(args).every((k) => allowed.includes(k));
+}
 
 const TOOLS: Tool[] = [
   {
@@ -33,7 +88,8 @@ const TOOLS: Tool[] = [
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
     annotations: { readOnlyHint: true },
     scope: "read",
-    path: (args) => (Object.keys(args).length === 0 ? "/api/assets" : null),
+    prefix: "/api/assets",
+    path: (args) => (onlyKeys(args, []) ? apiPath("api", "assets") : null),
   },
   {
     name: "get_asset",
@@ -41,17 +97,77 @@ const TOOLS: Tool[] = [
     description: "Get one asset with its units (same fields as GET /api/assets/:id).",
     inputSchema: {
       type: "object",
-      properties: { asset_id: { type: "string", minLength: 1 } },
+      properties: { asset_id: { type: "string", pattern: SAFE_SEGMENT.source } },
       required: ["asset_id"],
       additionalProperties: false,
     },
     annotations: { readOnlyHint: true },
     scope: "read",
+    prefix: "/api/assets",
+    path: (args) => (onlyKeys(args, ["asset_id"]) ? apiPath("api", "assets", arg(args.asset_id)) : null),
+  },
+  {
+    name: "list_work_orders",
+    title: "งานของสินทรัพย์",
+    description: "List work orders of one asset, optionally filtered by status (same fields as GET /api/assets/:id/work-orders).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        asset_id: { type: "string", pattern: SAFE_SEGMENT.source },
+        status: { type: "string", enum: [...WORK_ORDER_STATUSES] },
+      },
+      required: ["asset_id"],
+      additionalProperties: false,
+    },
+    annotations: { readOnlyHint: true },
+    scope: "read",
+    prefix: "/api/assets",
     path: (args) => {
-      const keys = Object.keys(args);
-      const id = args.asset_id;
-      if (keys.length !== 1 || typeof id !== "string" || id.length === 0) return null;
-      return `/api/assets/${encodeURIComponent(id)}`;
+      if (!onlyKeys(args, ["asset_id", "status"])) return null;
+      const { status } = args;
+      if (status !== undefined && (typeof status !== "string" || !WORK_ORDER_STATUS_VALUES.includes(status))) return null;
+      return withQuery(apiPath("api", "assets", arg(args.asset_id), "work-orders"), { status });
+    },
+  },
+  {
+    name: "get_work_order",
+    title: "รายละเอียดงาน",
+    description:
+      "Get one work order with its evidence metadata (same fields as GET /api/tasks/:id). Image files are not returned.",
+    inputSchema: {
+      type: "object",
+      properties: { work_order_id: { type: "string", pattern: SAFE_SEGMENT.source } },
+      required: ["work_order_id"],
+      additionalProperties: false,
+    },
+    annotations: { readOnlyHint: true },
+    scope: "read",
+    prefix: "/api/tasks",
+    path: (args) => (onlyKeys(args, ["work_order_id"]) ? apiPath("api", "tasks", arg(args.work_order_id)) : null),
+  },
+  {
+    name: "list_evidence",
+    title: "หลักฐานภาคสนาม",
+    description:
+      "List uploaded proof-of-work evidence metadata, newest first (same fields as GET /api/evidence). " +
+      "lat/lng/accuracy are as reported by the field device (ค่าที่ภาคสนามแจ้ง), not independently verified. Image files are not returned.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        asset_id: { type: "string", pattern: SAFE_SEGMENT.source },
+        limit: { type: "integer", minimum: 1, maximum: 100, default: 50 },
+      },
+      additionalProperties: false,
+    },
+    annotations: { readOnlyHint: true },
+    scope: "read",
+    prefix: "/api/evidence",
+    path: (args) => {
+      if (!onlyKeys(args, ["asset_id", "limit"])) return null;
+      const { asset_id, limit = 50 } = args;
+      if (typeof limit !== "number" || !Number.isInteger(limit) || limit < 1 || limit > 100) return null;
+      if (asset_id !== undefined && (typeof asset_id !== "string" || !SAFE_SEGMENT.test(asset_id))) return null;
+      return withQuery(apiPath("api", "evidence"), { asset_id, limit: String(limit) });
     },
   },
 ];
@@ -74,26 +190,61 @@ function rpcError(id: JsonRpcId | null, code: number, message: string, status = 
   return Response.json({ jsonrpc: "2.0", id, error: { code, message } }, { status });
 }
 
-function toolError(code: string): ToolResult {
-  return { content: [{ type: "text", text: JSON.stringify({ error: code }) }], isError: true };
+type ToolOutcome = { result: ToolResult; errorCode: string | null };
+
+function toolError(code: string): ToolOutcome {
+  return { result: { content: [{ type: "text", text: JSON.stringify({ error: code }) }], isError: true }, errorCode: code };
 }
 
-async function callTool(tool: Tool, args: unknown, scopes: string[], env: Env): Promise<ToolResult> {
+/** Internal read request: always GET with the server-side API_TOKEN; tools cannot choose the method. */
+function internalGet(path: string, env: Env & { API_TOKEN: string }): Promise<Response> {
+  return Promise.resolve(app.request(path, { method: "GET", headers: { authorization: `Bearer ${env.API_TOKEN}` } }, env));
+}
+
+async function callTool(tool: Tool, args: unknown, scopes: string[], env: Env): Promise<ToolOutcome> {
   if (!scopes.includes(tool.scope)) return toolError("insufficient_scope");
   if (args !== undefined && !isObject(args)) return toolError("validation_error");
   const path = tool.path(args ?? {});
-  if (!path) return toolError("validation_error");
-  if (!env.API_TOKEN) return toolError("server_not_configured");
+  if (path === null || !isSafeInternalPath(path, tool.prefix)) return toolError("validation_error");
+  const token = env.API_TOKEN;
+  if (!token) return toolError("server_not_configured");
   try {
-    const res = await app.request(path, { headers: { authorization: `Bearer ${env.API_TOKEN}` } }, env);
+    const res = await internalGet(path, { ...env, API_TOKEN: token });
     const body: unknown = await res.json().catch(() => null);
     if (res.ok && body !== null) {
-      return { content: [{ type: "text", text: JSON.stringify(body) }], structuredContent: body };
+      return { result: { content: [{ type: "text", text: JSON.stringify(body) }], structuredContent: body }, errorCode: null };
     }
-    const code = isObject(body) && typeof body.error === "string" ? body.error : `upstream_${res.status}`;
-    return toolError(code);
+    return toolError(isObject(body) && typeof body.error === "string" ? body.error : `upstream_${res.status}`);
   } catch {
     return toolError("internal_error");
+  }
+}
+
+type McpAuth = { scope?: string[]; userId?: string; clientId?: string };
+
+/** One mcp_audit row per tools/call: no arguments, results or emails are stored. Never fails the call. */
+async function writeAudit(
+  env: Env,
+  auth: McpAuth | undefined,
+  entry: { tool: string; errorCode: string | null; ms: number },
+): Promise<void> {
+  try {
+    await env.DB.prepare(
+      "INSERT INTO mcp_audit (id, at, user_hash, client_id, tool, ok, error_code, ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+      .bind(
+        crypto.randomUUID(),
+        Date.now(),
+        auth?.userId ?? "",
+        auth?.clientId ?? "",
+        entry.tool,
+        entry.errorCode === null ? 1 : 0,
+        entry.errorCode,
+        entry.ms,
+      )
+      .run();
+  } catch (err) {
+    console.warn("mcp_audit write failed", err instanceof Error ? err.message : "unknown");
   }
 }
 
@@ -107,8 +258,8 @@ async function clientScopes(env: Env, tokenScopes: string[]): Promise<string[] |
   return tokenScopes.filter((s) => allowed.includes(s));
 }
 
-/** OAuthProvider adds `auth` (token scopes etc.) to the context it hands the API handler. */
-type McpContext = ExecutionContext & { auth?: { scope?: string[] } };
+/** OAuthProvider adds `auth` (token scopes, grant userId, DCR clientId) to the context it hands the API handler. */
+type McpContext = ExecutionContext & { auth?: McpAuth };
 
 /** OAuthProvider apiHandler: only reached with a valid access token for /mcp. */
 export const mcpApiHandler = {
@@ -162,9 +313,19 @@ export const mcpApiHandler = {
           })),
         });
       case "tools/call": {
+        const started = Date.now();
         const tool = TOOLS.find((t) => t.name === params.name);
-        if (!tool) return rpcError(id, -32602, `Unknown tool: ${String(params.name)}`);
-        return rpcResult(id, await callTool(tool, params.arguments, scopes, env));
+        // The AI-supplied name is only stored when it is one of ours.
+        const outcome = tool ? await callTool(tool, params.arguments, scopes, env) : null;
+        const audit = writeAudit(env, ctx.auth, {
+          tool: tool?.name ?? "(unknown)",
+          errorCode: outcome ? outcome.errorCode : "unknown_tool",
+          ms: Date.now() - started,
+        });
+        if (typeof ctx.waitUntil === "function") ctx.waitUntil(audit);
+        else await audit;
+        if (!outcome) return rpcError(id, -32602, "Unknown tool");
+        return rpcResult(id, outcome.result);
       }
       default:
         return rpcError(id, -32601, "Method not found");
