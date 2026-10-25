@@ -128,7 +128,7 @@ describe("JSON-RPC lifecycle", () => {
 });
 
 describe("tools", () => {
-  it("tools/list has the ten read-only tools", async () => {
+  it("tools/list has the twelve read-only tools", async () => {
     const tools = (await rpc("tools/list")).result?.tools as { name: string; annotations: unknown; inputSchema: Record<string, unknown> }[];
     expect(tools.map((t) => t.name)).toEqual([
       "list_assets",
@@ -141,6 +141,8 @@ describe("tools", () => {
       "list_contracts",
       "list_disaster_events",
       "get_disaster_impact",
+      "settlement_preview",
+      "settlement_what_if",
     ]);
     for (const t of tools) {
       expect(t.annotations).toEqual({ readOnlyHint: true });
@@ -467,7 +469,7 @@ describe("crop cycle / harvest / contract / disaster tools", () => {
 
   it("list_contracts says the numbers are drafts; no file tools exist", async () => {
     const tools = (await rpc("tools/list")).result?.tools as { name: string; description: string; annotations: unknown }[];
-    expect(tools).toHaveLength(10);
+    expect(tools).toHaveLength(12);
     expect(tools.every((t) => JSON.stringify(t.annotations) === '{"readOnlyHint":true}')).toBe(true);
     expect(tools.find((t) => t.name === "list_contracts")?.description).toContain("ตัวเลขและกติกาทั้งหมดเป็นร่าง draft_unconfirmed");
     expect(tools.some((t) => /image|slip|file/i.test(t.name))).toBe(false);

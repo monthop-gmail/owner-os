@@ -15,18 +15,28 @@ export const INSTRUCTIONS =
 type JsonRpcId = string | number;
 type JsonRpcRequest = { jsonrpc: "2.0"; id?: JsonRpcId; method: string; params?: unknown };
 type ToolResult = { content: { type: "text"; text: string }[]; structuredContent?: unknown; isError?: boolean };
-type Tool = {
+type ToolBase = {
   name: string;
   title: string;
   description: string;
   inputSchema: Record<string, unknown>;
   annotations: { readOnlyHint: true };
   scope: "read";
+};
+/** A plain read tool: one internal GET. */
+type GetTool = ToolBase & {
   /** Every internal path this tool builds must start with this prefix. */
   prefix: string;
   /** Returns the /api path (+ query) to GET, built only with apiPath/withQuery; null when the arguments are invalid. */
   path(args: Record<string, unknown>): string | null;
 };
+/** A computed tool (settlement preview/what-if): only uses internalPreviewPost. */
+type RunTool = ToolBase & {
+  /** Strict argument check; null → validation_error before anything else happens. */
+  parse(args: Record<string, unknown>): unknown;
+  run(input: unknown, env: Env & { API_TOKEN: string }): Promise<ToolOutcome>;
+};
+type Tool = GetTool | RunTool;
 
 const WORK_ORDER_STATUS_VALUES: readonly string[] = WORK_ORDER_STATUSES;
 const SAFE_SEGMENT = /^[A-Za-z0-9_-]{1,64}$/;
@@ -88,7 +98,7 @@ function idTool(spec: {
   key: string;
   prefix: string;
   path: (id: ArgSegment) => string | null;
-}): Tool {
+}): GetTool {
   return {
     name: spec.name,
     title: spec.title,
@@ -105,6 +115,276 @@ function idTool(spec: {
     path: (args) => (onlyKeys(args, [spec.key]) ? spec.path(arg(args[spec.key])) : null),
   };
 }
+
+// ---- Settlement preview / what-if (compute only; POST /api/contracts/:id/settlement-preview writes nothing) ----
+
+const SETTLEMENT_PREVIEW_PATH = /^\/api\/contracts\/[A-Za-z0-9_-]{1,64}\/settlement-preview$/;
+const DRAFT_NOTE =
+  "ตัวเลขทั้งหมดเป็นร่าง draft_unconfirmed (กติกายังไม่ยืนยันจากเจ้าของ) · คำนวณเพื่อดูผลเท่านั้น ไม่มีการบันทึก settlement";
+
+/**
+ * The only internal non-GET request MCP may make: POST to exactly
+ * /api/contracts/<safe id>/settlement-preview (checked by regex and isSafeInternalPath before sending).
+ * Returns null — without any request — for any other path.
+ */
+export async function internalPreviewPost(
+  path: string,
+  body: Record<string, unknown>,
+  env: Env & { API_TOKEN: string },
+): Promise<Response | null> {
+  if (!SETTLEMENT_PREVIEW_PATH.test(path) || !isSafeInternalPath(path, "/api/contracts")) return null;
+  return app.request(
+    path,
+    {
+      method: "POST",
+      headers: { authorization: `Bearer ${env.API_TOKEN}`, "content-type": "application/json" },
+      body: JSON.stringify(body),
+    },
+    env,
+  );
+}
+
+type PreviewCall = { ok: true; body: Record<string, unknown> } | { ok: false; error: string };
+
+async function internalPreview(
+  contractId: string,
+  input: Record<string, unknown>,
+  env: Env & { API_TOKEN: string },
+): Promise<PreviewCall> {
+  const path = apiPath("api", "contracts", arg(contractId), "settlement-preview");
+  const res = path === null ? null : await internalPreviewPost(path, input, env);
+  if (!res) return { ok: false, error: "validation_error" };
+  const body: unknown = await res.json().catch(() => null);
+  if (res.ok && isObject(body)) return { ok: true, body };
+  return { ok: false, error: isObject(body) && typeof body.error === "string" ? body.error : `upstream_${res.status}` };
+}
+
+const isNum = (v: unknown, min = -Infinity, max = Infinity): v is number =>
+  typeof v === "number" && Number.isFinite(v) && v >= min && v <= max;
+
+const PREVIEW_NUMBER_FIELDS = [
+  "revenue_thb",
+  "opex_thb",
+  "period_months",
+  "turnovers",
+  "repair_cost_thb",
+  "damage_pct",
+  "insurance_thb",
+  "government_aid_thb",
+] as const;
+const PREVIEW_FIELDS = ["crop_cycle_id", ...PREVIEW_NUMBER_FIELDS, "jobs", "cancelled_jobs"];
+
+function isJobList(v: unknown): boolean {
+  return (
+    Array.isArray(v) &&
+    v.length <= 200 &&
+    v.every((j) => isObject(j) && onlyKeys(j, ["job_key", "quantity"]) && typeof j.job_key === "string" && isNum(j.quantity))
+  );
+}
+
+/**
+ * Shape check for preview inputs (strict keys, primitive types). Contract-type rules (required fields,
+ * ranges, decimals) stay with the route, so the tool reports the route's own error codes.
+ */
+function parsePreviewInput(v: unknown): Record<string, unknown> | null {
+  if (!isObject(v) || !onlyKeys(v, PREVIEW_FIELDS)) return null;
+  if (v.crop_cycle_id !== undefined && (typeof v.crop_cycle_id !== "string" || !SAFE_SEGMENT.test(v.crop_cycle_id))) return null;
+  for (const key of PREVIEW_NUMBER_FIELDS) if (v[key] !== undefined && !isNum(v[key])) return null;
+  for (const key of ["jobs", "cancelled_jobs"]) if (v[key] !== undefined && !isJobList(v[key])) return null;
+  return { ...v };
+}
+
+const NUM = { type: "number" } as const;
+const JOBS = {
+  type: "array",
+  items: {
+    type: "object",
+    properties: { job_key: { type: "string" }, quantity: { type: "number" } },
+    required: ["job_key", "quantity"],
+    additionalProperties: false,
+  },
+} as const;
+const PREVIEW_PROPERTIES = {
+  crop_cycle_id: { type: "string", pattern: SAFE_SEGMENT.source, description: "use the cycle's harvest-log revenue (instead of revenue_thb)" },
+  revenue_thb: NUM,
+  opex_thb: NUM,
+  period_months: { type: "integer", minimum: 0 },
+  jobs: JOBS,
+  cancelled_jobs: JOBS,
+  turnovers: { type: "integer", minimum: 0 },
+  repair_cost_thb: NUM,
+  damage_pct: { type: "number", minimum: 0, maximum: 100 },
+  insurance_thb: NUM,
+  government_aid_thb: NUM,
+};
+
+type WhatIfScenario = {
+  label: string;
+  revenue_change_pct?: number;
+  opex_change_pct?: number;
+  damage_pct?: number;
+  insurance_thb?: number;
+};
+type WhatIfInput = { contract_id: string; base: Record<string, unknown>; scenarios: WhatIfScenario[] };
+
+function parseScenario(v: unknown): WhatIfScenario | null {
+  if (!isObject(v) || !onlyKeys(v, ["label", "revenue_change_pct", "opex_change_pct", "damage_pct", "insurance_thb"])) return null;
+  const { label, revenue_change_pct, opex_change_pct, damage_pct, insurance_thb } = v;
+  if (typeof label !== "string" || label.length < 1 || label.length > 60) return null;
+  if (revenue_change_pct !== undefined && !isNum(revenue_change_pct, -100, 300)) return null;
+  if (opex_change_pct !== undefined && !isNum(opex_change_pct, -100, 300)) return null;
+  if (damage_pct !== undefined && !isNum(damage_pct, 0, 100)) return null;
+  if (insurance_thb !== undefined && !isNum(insurance_thb, 0)) return null;
+  return v as WhatIfScenario;
+}
+
+/** amount × (1 + pct/100), rounded to whole satang once. */
+function adjustThb(thb: number, pct: number): number {
+  return Math.round(Math.round(thb * 100) * (1 + pct / 100)) / 100;
+}
+
+/** Revenue the base preview actually used (the harvest logs' total when it was given a crop_cycle_id). */
+function previewRevenueThb(body: Record<string, unknown>): number | undefined {
+  const inflows = Array.isArray(body.inflows) ? (body.inflows as { key?: unknown; amount_thb?: unknown }[]) : [];
+  const revenue = inflows.find((i) => i.key === "revenue")?.amount_thb;
+  return typeof revenue === "number" ? revenue : undefined;
+}
+
+/** Builds one scenario's preview input from the base, or returns an error code for that scenario. */
+function scenarioInputs(
+  base: Record<string, unknown>,
+  basePreview: Record<string, unknown>,
+  sc: WhatIfScenario,
+): { inputs: Record<string, unknown> } | { error: string } {
+  const inputs: Record<string, unknown> = { ...base };
+  if (sc.revenue_change_pct !== undefined) {
+    let revenue = typeof base.revenue_thb === "number" ? base.revenue_thb : undefined;
+    if (base.crop_cycle_id !== undefined) {
+      // Send the cycle's real revenue as revenue_thb (never both). Damage the route took from the
+      // cycle's disaster events is carried over so the scenario only changes what it says it changes.
+      revenue = previewRevenueThb(basePreview);
+      delete inputs.crop_cycle_id;
+      const source = isObject(basePreview.source) ? basePreview.source : {};
+      if (inputs.damage_pct === undefined && source.damage_from === "events" && typeof source.damage_pct === "number") {
+        inputs.damage_pct = source.damage_pct;
+      }
+    }
+    if (revenue === undefined) return { error: "revenue_not_applicable" };
+    inputs.revenue_thb = adjustThb(revenue, sc.revenue_change_pct);
+  }
+  if (sc.opex_change_pct !== undefined) {
+    if (typeof base.opex_thb !== "number") return { error: "opex_not_applicable" };
+    inputs.opex_thb = adjustThb(base.opex_thb, sc.opex_change_pct);
+  }
+  if (sc.damage_pct !== undefined) inputs.damage_pct = sc.damage_pct;
+  if (sc.insurance_thb !== undefined) inputs.insurance_thb = sc.insurance_thb;
+  return { inputs };
+}
+
+function jsonResult(body: Record<string, unknown>): ToolOutcome {
+  return { result: { content: [{ type: "text", text: JSON.stringify(body) }], structuredContent: body }, errorCode: null };
+}
+
+const settlementPreviewTool: RunTool = {
+  name: "settlement_preview",
+  title: "ร่างการแบ่งผลประโยชน์ตามสัญญา",
+  description:
+    "Preview how revenue would be split under one contract (same as POST /api/contracts/:id/settlement-preview). " +
+    "Compute only — nothing is saved. Required fields depend on the contract type. ตัวเลขและกติกาทั้งหมดเป็นร่าง draft_unconfirmed",
+  inputSchema: {
+    type: "object",
+    properties: { contract_id: { type: "string", pattern: SAFE_SEGMENT.source }, ...PREVIEW_PROPERTIES },
+    required: ["contract_id"],
+    additionalProperties: false,
+  },
+  annotations: { readOnlyHint: true },
+  scope: "read",
+  parse: (args) => {
+    const { contract_id, ...rest } = args;
+    if (typeof contract_id !== "string" || !SAFE_SEGMENT.test(contract_id)) return null;
+    const input = parsePreviewInput(rest);
+    return input && { contract_id, input };
+  },
+  run: async (parsed, env) => {
+    const { contract_id, input } = parsed as { contract_id: string; input: Record<string, unknown> };
+    const res = await internalPreview(contract_id, input, env);
+    return res.ok ? jsonResult(res.body) : toolError(res.error);
+  },
+};
+
+const settlementWhatIfTool: RunTool = {
+  name: "settlement_what_if",
+  title: "เทียบหลายสถานการณ์ (what-if)",
+  description:
+    "Compare up to 10 scenarios against a base settlement preview of one contract, e.g. price drops of 10/20/30% " +
+    "(revenue_change_pct: -10, -20, -30) or a disaster with insurance. revenue/opex are scaled by (1 + pct/100) and " +
+    "rounded to satang once. Compute only — nothing is saved. ตัวเลขและกติกาทั้งหมดเป็นร่าง draft_unconfirmed",
+  inputSchema: {
+    type: "object",
+    properties: {
+      contract_id: { type: "string", pattern: SAFE_SEGMENT.source },
+      base: { type: "object", properties: PREVIEW_PROPERTIES, additionalProperties: false },
+      scenarios: {
+        type: "array",
+        minItems: 1,
+        maxItems: 10,
+        items: {
+          type: "object",
+          properties: {
+            label: { type: "string", minLength: 1, maxLength: 60 },
+            revenue_change_pct: { type: "number", minimum: -100, maximum: 300 },
+            opex_change_pct: { type: "number", minimum: -100, maximum: 300 },
+            damage_pct: { type: "number", minimum: 0, maximum: 100 },
+            insurance_thb: { type: "number", minimum: 0 },
+          },
+          required: ["label"],
+          additionalProperties: false,
+        },
+      },
+    },
+    required: ["contract_id", "base", "scenarios"],
+    additionalProperties: false,
+  },
+  annotations: { readOnlyHint: true },
+  scope: "read",
+  parse: (args): WhatIfInput | null => {
+    if (!onlyKeys(args, ["contract_id", "base", "scenarios"])) return null;
+    const { contract_id, base, scenarios } = args;
+    if (typeof contract_id !== "string" || !SAFE_SEGMENT.test(contract_id)) return null;
+    const baseInput = parsePreviewInput(base);
+    if (!baseInput || !Array.isArray(scenarios) || scenarios.length < 1 || scenarios.length > 10) return null;
+    const parsed = scenarios.map(parseScenario);
+    if (parsed.some((sc) => sc === null)) return null;
+    return { contract_id, base: baseInput, scenarios: parsed as WhatIfScenario[] };
+  },
+  run: async (parsed, env) => {
+    const { contract_id, base, scenarios } = parsed as WhatIfInput;
+    // At most 1 + 10 internal previews; the whole call is one tool call for audit and rate limit.
+    const basePreview = await internalPreview(contract_id, base, env);
+    if (!basePreview.ok) return toolError(basePreview.error);
+    const results = [];
+    for (const sc of scenarios) {
+      const built = scenarioInputs(base, basePreview.body, sc);
+      if ("error" in built) {
+        results.push({ label: sc.label, error: built.error });
+        continue;
+      }
+      const res = await internalPreview(contract_id, built.inputs, env);
+      results.push(
+        res.ok
+          ? {
+              label: sc.label,
+              inputs_used: built.inputs,
+              owner_payout_thb: res.body.owner_payout_thb,
+              operator_payout_thb: res.body.operator_payout_thb,
+              disaster_clause_applied: res.body.disaster_clause_applied,
+            }
+          : { label: sc.label, inputs_used: built.inputs, error: res.error },
+      );
+    }
+    return jsonResult({ base: basePreview.body, scenarios: results, rules_status: "draft_unconfirmed", note: DRAFT_NOTE });
+  },
+};
 
 const TOOLS: Tool[] = [
   {
@@ -238,6 +518,8 @@ const TOOLS: Tool[] = [
     prefix: "/api/crop-cycles",
     path: (id) => apiPath("api", "crop-cycles", id, "disaster-impact"),
   }),
+  settlementPreviewTool,
+  settlementWhatIfTool,
 ];
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -280,6 +562,17 @@ function internalGet(path: string, env: Env & { API_TOKEN: string }): Promise<Re
 async function callTool(tool: Tool, args: unknown, scopes: string[], env: Env): Promise<ToolOutcome> {
   if (!scopes.includes(tool.scope)) return toolError("insufficient_scope");
   if (args !== undefined && !isObject(args)) return toolError("validation_error");
+  if ("run" in tool) {
+    const input = tool.parse(args ?? {});
+    if (input === null) return toolError("validation_error");
+    const apiToken = env.API_TOKEN;
+    if (!apiToken) return toolError("server_not_configured");
+    try {
+      return await tool.run(input, { ...env, API_TOKEN: apiToken });
+    } catch {
+      return toolError("internal_error");
+    }
+  }
   const path = tool.path(args ?? {});
   if (path === null || !isSafeInternalPath(path, tool.prefix)) return toolError("validation_error");
   const token = env.API_TOKEN;
