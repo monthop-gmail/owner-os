@@ -1,0 +1,27 @@
+name = "owner-os-worker"
+main = "src/index.ts"
+compatibility_date = "2026-10-19"
+
+# Local-only placeholder; the real database_id is set when the D1 database is created.
+[[d1_databases]]
+binding = "DB"
+database_name = "owner-os"
+database_id = "00000000-0000-0000-0000-000000000000"
+migrations_dir = "migrations"
+
+[[r2_buckets]]
+binding = "BUCKET"
+bucket_name = "owner-os-evidence"
+
+# OAuth storage for /mcp (local-only placeholder id).
+[[kv_namespaces]]
+binding = "OAUTH_KV"
+id = "00000000000000000000000000000000"
+
+# /oauth/authorize sits behind Cloudflare Access; set the real values per deployment.
+# Secret (not here): CONSENT_CSRF_SECRET via `wrangler secret put` / .dev.vars.
+[vars]
+ACCESS_TEAM_DOMAIN = ""
+ACCESS_AUD = ""
+OWNER_EMAILS = ""
+MCP_ALLOWED_REDIRECT_HOSTS = "chatgpt.com,claude.ai"

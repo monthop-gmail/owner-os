@@ -1,0 +1,1 @@
+ALTER TABLE `farm_crop_cycles` ADD `template_key` text;

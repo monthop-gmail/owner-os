@@ -1,0 +1,1 @@
+CREATE INDEX `mcp_audit_client_at_idx` ON `mcp_audit` (`client_id`,`at`);
