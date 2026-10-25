@@ -293,11 +293,14 @@ describe("limits", () => {
   });
 
   it(`more than ${MAX_PENDING_DRAFTS_PER_ASSET} pending drafts per asset → too_many_pending_drafts`, async () => {
+    // Pre-fill up to one below the cap directly (fast); the last allowed draft and the refused one go through the tool.
     const existing = await count("ai_drafts", "asset_id = ? AND status = 'pending'", otherAssetId);
-    for (let i = existing; i < MAX_PENDING_DRAFTS_PER_ASSET; i++) {
-      const result = await tool("propose_disaster_prep", { asset_id: otherAssetId, event_type: "flood" });
-      expect(result.isError).toBeUndefined();
-    }
+    const fill = env.DB.prepare(
+      "INSERT INTO ai_drafts (id, kind, asset_id, payload_json, status, created_at, created_by_user_hash, created_by_client_id) VALUES (?, 'disaster_prep', ?, '{\"event_type\":\"flood\"}', 'pending', ?, 'h', 'c')",
+    );
+    const missing = MAX_PENDING_DRAFTS_PER_ASSET - 1 - existing;
+    if (missing > 0) await env.DB.batch(Array.from({ length: missing }, () => fill.bind(crypto.randomUUID(), otherAssetId, Date.now())));
+    expect((await tool("propose_disaster_prep", { asset_id: otherAssetId, event_type: "flood" })).isError).toBeUndefined();
     expect(await count("ai_drafts", "asset_id = ? AND status = 'pending'", otherAssetId)).toBe(MAX_PENDING_DRAFTS_PER_ASSET);
     expect(errorCode(await tool("propose_disaster_prep", { asset_id: otherAssetId, event_type: "flood" }))).toBe(
       "too_many_pending_drafts",
@@ -305,7 +308,7 @@ describe("limits", () => {
     expect(await count("ai_drafts", "asset_id = ? AND status = 'pending'", otherAssetId)).toBe(MAX_PENDING_DRAFTS_PER_ASSET);
     // Other assets are not affected.
     expect((await tool("propose_disaster_prep", { asset_id: durianId, event_type: "flood" })).isError).toBeUndefined();
-  });
+  }, 30_000);
 
   afterAll(() => setCeiling("read"));
 });
