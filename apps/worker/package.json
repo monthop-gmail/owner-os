@@ -11,6 +11,7 @@
     "seed:demo": "tsx scripts/seed-demo.ts"
   },
   "dependencies": {
+    "@cloudflare/workers-oauth-provider": "^1.2.4",
     "@owner-os/shared": "workspace:*",
     "@turf/area": "^7.4.0",
     "@turf/boolean-point-in-polygon": "^7.4.0",

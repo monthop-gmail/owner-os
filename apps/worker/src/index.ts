@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { requireApiToken } from "./auth";
 import type { Env } from "./env";
+import { createOAuthProvider, oauthRoutes } from "./mcp/oauth";
 import { assetsRoutes } from "./routes/assets";
 import { assetContractsRoutes, contractsRoutes } from "./routes/contracts";
 import { cropCyclesRoutes, cropTemplatesRoutes, unitCropCyclesRoutes } from "./routes/crop-cycles";
@@ -23,6 +24,9 @@ app.get("/test-camera", (c) =>
   }),
 );
 
+// OAuth consent for cloud AI connectors (behind Cloudflare Access). /api/* keeps API_TOKEN only.
+app.route("/oauth", oauthRoutes);
+
 app.use("/api/*", requireApiToken);
 app.route("/api/assets", assetsRoutes);
 app.route("/api/tasks", tasksRoutes);
@@ -38,4 +42,12 @@ app.route("/api/assets", assetDisasterRoutes);
 app.route("/api/disaster-events", disasterEventsRoutes);
 app.route("/api/crop-cycles", cycleDisasterRoutes);
 
-export default app;
+const defaultHandler = { fetch: (request: Request, env: Env, ctx: ExecutionContext) => app.fetch(request, env, ctx) };
+
+// OAuthProvider serves /oauth/token, /oauth/register and metadata, guards /mcp with OAuth tokens,
+// and passes every other request to the Hono app unchanged.
+export default {
+  fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    return createOAuthProvider(env, new URL(request.url).origin, defaultHandler).fetch(request, env, ctx);
+  },
+} satisfies ExportedHandler<Env>;

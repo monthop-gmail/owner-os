@@ -34,3 +34,7 @@
 - [x] Task 4.4a: บันทึกเหตุภัยพิบัติ + แปลงที่โดน + % ความเสียหาย + ผูกหลักฐานรูป GPS
 - [x] Task 4.4b: ข้อตกลงกรณีภัยครบ 4 type + settlement รับเงินประกัน/เงินช่วยเหลือ (preview · draft_unconfirmed · ค่าเริ่มต้นผู้ดูแลไม่ติดลบ)
 - [x] Task 4.4c: แม่แบบงานรับมือภัย (เตรียมก่อนภัย/ฟื้นฟูหลังภัย) + สร้าง work order จากเหตุภัย
+
+## Milestone 6: MCP สำหรับ AI บนคลาวด์ (ChatGPT/Claude)
+- [x] Task 5.1a-1: OAuth + consent + ai_clients
+- [ ] Task 5.1a-2: /mcp JSON-RPC + list_assets/get_asset

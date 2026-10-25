@@ -225,3 +225,16 @@ export type AssetContract = typeof asset_contracts.$inferSelect;
 export type NewAssetContract = typeof asset_contracts.$inferInsert;
 export type DisasterEventRow = typeof disaster_events.$inferSelect;
 export type DisasterEventUnitRow = typeof disaster_event_units.$inferSelect;
+
+// AI connectors (MCP over OAuth). Revoking a row (revoked_at set) cuts off every token of that client.
+export const ai_clients = sqliteTable("ai_clients", {
+  name: text("name").primaryKey(),
+  /** Space-separated scopes, e.g. "read". */
+  scopes: text("scopes").notNull(),
+  rate_per_minute: integer("rate_per_minute").notNull().default(60),
+  rate_per_day: integer("rate_per_day").notNull().default(5000),
+  revoked_at: integer("revoked_at"),
+  created_at: integer("created_at").notNull(),
+});
+
+export type AiClient = typeof ai_clients.$inferSelect;
