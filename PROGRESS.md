@@ -37,4 +37,4 @@
 
 ## Milestone 6: MCP สำหรับ AI บนคลาวด์ (ChatGPT/Claude)
 - [x] Task 5.1a-1: OAuth + consent + ai_clients
-- [ ] Task 5.1a-2: /mcp JSON-RPC + list_assets/get_asset
+- [x] Task 5.1a-2: /mcp JSON-RPC + list_assets/get_asset

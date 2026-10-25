@@ -1,158 +1,30 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Env } from "../src/env";
-import worker from "../src/index";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { resetAccessCertsCache } from "../src/mcp/access-jwt";
-import { authHeader, createTestEnv, type TestEnv } from "./d1";
-
-// Fictional Access team / audience / owner; the RSA keys are generated per run (never real credentials).
-const TEAM = "test-team.cloudflareaccess.com";
-const AUD = "test-access-aud";
-const OWNER = "owner@example.com";
-const CERTS_URL = `https://${TEAM}/cdn-cgi/access/certs`;
-const REDIRECT = "https://claude.ai/api/mcp/auth_callback";
-
-let testEnv: TestEnv;
-let env: Env;
-let signingKey: CryptoKey;
-let otherKey: CryptoKey;
-let publicJwk: JsonWebKey;
-let clientId: string;
-
-const ctx = { waitUntil() {}, passThroughOnException() {}, props: {} } as unknown as ExecutionContext;
-const encoder = new TextEncoder();
-
-function b64url(data: Uint8Array | string): string {
-  const bytes = typeof data === "string" ? encoder.encode(data) : data;
-  let bin = "";
-  for (const b of bytes) bin += String.fromCharCode(b);
-  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}
-
-async function signJwt(claims: Record<string, unknown>, key: CryptoKey = signingKey): Promise<string> {
-  const now = Math.floor(Date.now() / 1000);
-  const payload = { iss: `https://${TEAM}`, aud: [AUD], email: OWNER, iat: now, nbf: now - 5, exp: now + 300, ...claims };
-  const input = `${b64url(JSON.stringify({ alg: "RS256", kid: "test-kid", typ: "JWT" }))}.${b64url(JSON.stringify(payload))}`;
-  const sig = new Uint8Array(await crypto.subtle.sign("RSASSA-PKCS1-v1_5", key, encoder.encode(input)));
-  return `${input}.${b64url(sig)}`;
-}
-
-function call(path: string, init: RequestInit = {}, e: Env = env): Promise<Response> {
-  return worker.fetch(new Request(`http://localhost${path}`, init), e, ctx);
-}
-
-async function pkce(): Promise<{ verifier: string; challenge: string }> {
-  const verifier = b64url(crypto.getRandomValues(new Uint8Array(32)));
-  const challenge = b64url(new Uint8Array(await crypto.subtle.digest("SHA-256", encoder.encode(verifier))));
-  return { verifier, challenge };
-}
-
-function authorizeQuery(challenge: string, scope = "read offline_access"): string {
-  return new URLSearchParams({
-    response_type: "code",
-    client_id: clientId,
-    redirect_uri: REDIRECT,
-    scope,
-    state: "state-123",
-    code_challenge: challenge,
-    code_challenge_method: "S256",
-  }).toString();
-}
-
-async function getConsent(query: string, jwt?: string, e: Env = env): Promise<Response> {
-  return call(`/oauth/authorize?${query}`, { headers: jwt ? { "cf-access-jwt-assertion": jwt } : {} }, e);
-}
-
-async function postConsent(fields: Record<string, string>, jwt?: string): Promise<Response> {
-  return call("/oauth/authorize", {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded", ...(jwt ? { "cf-access-jwt-assertion": jwt } : {}) },
-    body: new URLSearchParams(fields).toString(),
-    redirect: "manual",
-  });
-}
-
-function csrfFrom(html: string): string {
-  const m = /name="csrf" value="([^"]+)"/.exec(html);
-  if (!m?.[1]) throw new Error("csrf not found");
-  return m[1];
-}
-
-async function register(redirectUris: string[]): Promise<Response> {
-  return call("/oauth/register", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      client_name: "Claude (test)",
-      redirect_uris: redirectUris,
-      token_endpoint_auth_method: "none",
-      grant_types: ["authorization_code", "refresh_token"],
-      response_types: ["code"],
-    }),
-  });
-}
-
-/** Full consent → token flow; returns the token response body. */
-async function obtainToken(scope?: string): Promise<{ access_token: string; scope?: string; refresh_token?: string }> {
-  const { verifier, challenge } = await pkce();
-  const jwt = await signJwt({});
-  const page = await getConsent(authorizeQuery(challenge, scope), jwt);
-  expect(page.status).toBe(200);
-  const approve = await postConsent({ csrf: csrfFrom(await page.text()), decision: "approve" }, jwt);
-  expect(approve.status).toBe(302);
-  const location = new URL(approve.headers.get("location") ?? "");
-  expect(`${location.origin}${location.pathname}`).toBe(REDIRECT);
-  expect(location.searchParams.get("state")).toBe("state-123");
-  const code = location.searchParams.get("code") ?? "";
-  const res = await call("/oauth/token", {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      grant_type: "authorization_code",
-      code,
-      redirect_uri: REDIRECT,
-      client_id: clientId,
-      code_verifier: verifier,
-    }).toString(),
-  });
-  expect(res.status).toBe(200);
-  return res.json();
-}
+import { authHeader } from "./d1";
+import {
+  authorizeQuery,
+  call,
+  csrfFrom,
+  env,
+  getConsent,
+  obtainToken,
+  otherKey,
+  pkce,
+  postConsent,
+  register,
+  REDIRECT,
+  setupOAuthHarness,
+  signJwt,
+  teardownOAuthHarness,
+} from "./mcp-helpers";
 
 beforeAll(async () => {
-  testEnv = await createTestEnv();
-  env = {
-    ...testEnv.env,
-    ACCESS_TEAM_DOMAIN: TEAM,
-    ACCESS_AUD: AUD,
-    OWNER_EMAILS: `${OWNER}, other-owner@example.com`,
-    MCP_ALLOWED_REDIRECT_HOSTS: "chatgpt.com,claude.ai",
-    CONSENT_CSRF_SECRET: "test-csrf-secret-not-real",
-  };
-  const params = { name: "RSASSA-PKCS1-v1_5", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" };
-  const pair = (await crypto.subtle.generateKey(params, true, ["sign", "verify"])) as CryptoKeyPair;
-  const other = (await crypto.subtle.generateKey(params, true, ["sign", "verify"])) as CryptoKeyPair;
-  signingKey = pair.privateKey;
-  otherKey = other.privateKey;
-  publicJwk = { ...((await crypto.subtle.exportKey("jwk", pair.publicKey)) as JsonWebKey), kid: "test-kid" } as JsonWebKey;
-
-  const realFetch = globalThis.fetch;
-  vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
-    const url = input instanceof Request ? input.url : String(input);
-    if (url === CERTS_URL) return Promise.resolve(Response.json({ keys: [publicJwk] }));
-    return realFetch(input, init);
-  });
-
-  const res = await register([REDIRECT]);
-  expect(res.status).toBe(201);
-  clientId = ((await res.json()) as { client_id: string }).client_id;
+  await setupOAuthHarness();
 });
 
 beforeEach(() => resetAccessCertsCache());
 
-afterAll(async () => {
-  vi.restoreAllMocks();
-  await testEnv?.dispose();
-});
+afterAll(teardownOAuthHarness);
 
 describe("Access JWT on /oauth/authorize", () => {
   it("accepts a valid JWT from an owner and renders the Thai consent page", async () => {
@@ -262,13 +134,17 @@ describe("dynamic client registration", () => {
 });
 
 describe("OAuth flow → /mcp", () => {
-  it("register → consent → token (PKCE S256) → /mcp answers 501 with a valid token", async () => {
+  it("register → consent → token (PKCE S256) → /mcp answers JSON-RPC with a valid token", async () => {
     const token = await obtainToken("read offline_access admin write");
     expect(token.scope?.split(" ").sort()).toEqual(["offline_access", "read"]);
     expect(token.refresh_token).toBeTruthy();
-    const res = await call("/mcp", { method: "POST", headers: { authorization: `Bearer ${token.access_token}` } });
-    expect(res.status).toBe(501);
-    expect(await res.json()).toEqual({ error: "not_implemented" });
+    const res = await call("/mcp", {
+      method: "POST",
+      headers: { authorization: `Bearer ${token.access_token}`, "content-type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "ping" }),
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ jsonrpc: "2.0", id: 1, result: {} });
   });
 
   it("/mcp without a token → 401 with WWW-Authenticate", async () => {

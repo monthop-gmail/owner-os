@@ -3,10 +3,10 @@ import { Hono } from "hono";
 import { tokensEqual } from "../auth";
 import type { Env } from "../env";
 import { AccessJwtError, verifyAccessJwt } from "./access-jwt";
+import { mcpApiHandler } from "./server";
 
 export const SUPPORTED_SCOPES = ["read", "offline_access"] as const;
 export const DEFAULT_REDIRECT_HOSTS = "chatgpt.com,claude.ai";
-export const MCP_DEFAULT_CLIENT = "mcp-default";
 
 const CSRF_TTL_SECONDS = 600;
 const CSRF_KV_PREFIX = "consent_csrf:";
@@ -185,22 +185,6 @@ oauthRoutes.post("/authorize", async (c) => {
   });
   return c.redirect(redirectTo, 302);
 });
-
-/** Temporary /mcp handler (JSON-RPC lands in 5.1a-2): token is valid here; check the client row. */
-export const mcpApiHandler = {
-  async fetch(_request: Request, env: Env): Promise<Response> {
-    const row = await env.DB.prepare("SELECT revoked_at FROM ai_clients WHERE name = ?")
-      .bind(MCP_DEFAULT_CLIENT)
-      .first<{ revoked_at: number | null }>();
-    if (!row || row.revoked_at !== null) {
-      return Response.json(
-        { error: "client_revoked" },
-        { status: 401, headers: { "WWW-Authenticate": 'Bearer error="invalid_token"' } },
-      );
-    }
-    return Response.json({ error: "not_implemented" }, { status: 501 });
-  },
-};
 
 /**
  * Builds the OAuth provider for this request's origin (the resource URL must be absolute).

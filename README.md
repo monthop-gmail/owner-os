@@ -40,3 +40,13 @@ OWNER_OS_URL=http://localhost:8787 OWNER_OS_TOKEN=change-me-local-only pnpm seed
 # deployed Worker
 OWNER_OS_URL=https://<your-worker-url> OWNER_OS_TOKEN=<API_TOKEN> pnpm seed:demo
 ```
+
+## ใช้จาก AI (MCP)
+
+- Endpoint: `https://<worker-host>/mcp` (MCP แบบ JSON-RPC, อ่านอย่างเดียว: `list_assets`, `get_asset`) · ChatGPT/Claude เชื่อมผ่าน OAuth (`/oauth/register` → `/oauth/authorize` → `/oauth/token`) · `/api/*` ยังใช้ `API_TOKEN` เหมือนเดิม
+- ขั้นที่เจ้าของต้องทำก่อนใช้จริง:
+  1. ตั้ง Cloudflare Access ครอบ `/oauth/authorize` แล้วใส่ `ACCESS_TEAM_DOMAIN` และ `ACCESS_AUD` (vars ใน `wrangler.toml`)
+  2. สร้าง KV namespace แล้วใส่ id ของ binding `OAUTH_KV` ใน `wrangler.toml`
+  3. `wrangler secret put CONSENT_CSRF_SECRET` (ค่าสุ่มยาว ๆ) และตั้ง `API_TOKEN` ไว้ (tool เรียก `/api` ภายใน Worker)
+  4. ใส่อีเมลเจ้าของใน `OWNER_EMAILS` (คั่นด้วย `,`) · redirect ที่อนุญาตอยู่ใน `MCP_ALLOWED_REDIRECT_HOSTS`
+- ตัดสิทธิ์ AI ทั้งหมด: ตั้ง `revoked_at` ของแถว `mcp-default` ในตาราง `ai_clients`
