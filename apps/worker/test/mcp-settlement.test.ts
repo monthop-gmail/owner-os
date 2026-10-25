@@ -32,7 +32,7 @@ beforeAll(async () => {
   });
   expect(summary.failures).toEqual([]);
   accessToken = (await obtainToken()).access_token;
-  await env.DB.prepare("UPDATE ai_clients SET rate_per_minute = 100000, rate_per_day = 100000 WHERE name = 'mcp-default'").run();
+  await env.DB.prepare("UPDATE ai_clients SET rate_per_minute = 100000, rate_per_day = 100000 WHERE client_id IS NOT NULL").run();
 
   const { assets } = (await apiGet("/api/assets")) as { assets: { id: string; name: string }[] };
   durianAssetId = assets.find((a) => a.name.includes("ทุเรียน"))!.id;
@@ -311,7 +311,7 @@ describe("no side effects, audit and rate limit", () => {
 
   it("one what-if (11 internal previews) is one audit row and one rate-limit unit", async () => {
     await env.DB.prepare("DELETE FROM mcp_audit").run();
-    await env.DB.prepare("UPDATE ai_clients SET rate_per_minute = 2 WHERE name = 'mcp-default'").run();
+    await env.DB.prepare("UPDATE ai_clients SET rate_per_minute = 2 WHERE client_id IS NOT NULL").run();
     try {
       const args = {
         contract_id: durianContractId,
@@ -334,7 +334,7 @@ describe("no side effects, audit and rate limit", () => {
       expect((await callTool("settlement_what_if", args)).isError).toBeUndefined(); // 2nd call: still within 2/min
       expect(errorCode(await callTool("settlement_what_if", args))).toBe("rate_limited"); // 3rd call
     } finally {
-      await env.DB.prepare("UPDATE ai_clients SET rate_per_minute = 100000 WHERE name = 'mcp-default'").run();
+      await env.DB.prepare("UPDATE ai_clients SET rate_per_minute = 100000 WHERE client_id IS NOT NULL").run();
     }
   });
 });

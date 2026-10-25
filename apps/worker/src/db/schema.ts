@@ -227,7 +227,11 @@ export type DisasterEventRow = typeof disaster_events.$inferSelect;
 export type DisasterEventUnitRow = typeof disaster_event_units.$inferSelect;
 
 // AI connectors (MCP over OAuth). Revoking a row (revoked_at set) cuts off every token of that client.
-export const ai_clients = sqliteTable("ai_clients", {
+// Row `mcp-default` (client_id NULL) is the global switch + ceiling; rows with client_id are per DCR client
+// (ceiling, revocation, rate limits). Effective scopes = token ∩ global ∩ client row; no client row → refused.
+export const ai_clients = sqliteTable(
+  "ai_clients",
+  {
   name: text("name").primaryKey(),
   /** Space-separated scopes, e.g. "read". */
   scopes: text("scopes").notNull(),
@@ -235,7 +239,11 @@ export const ai_clients = sqliteTable("ai_clients", {
   rate_per_day: integer("rate_per_day").notNull().default(5000),
   revoked_at: integer("revoked_at"),
   created_at: integer("created_at").notNull(),
-});
+    /** DCR client_id; NULL only for the global `mcp-default` row. */
+    client_id: text("client_id"),
+  },
+  (t) => [uniqueIndex("ai_clients_client_id_unique").on(t.client_id)],
+);
 
 export type AiClient = typeof ai_clients.$inferSelect;
 

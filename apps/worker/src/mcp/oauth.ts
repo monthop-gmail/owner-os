@@ -179,6 +179,14 @@ oauthRoutes.post("/authorize", async (c) => {
     return c.redirect(url.toString(), 302);
   }
 
+  // Per-client row (ceiling, revocation, rate limits). Created read-only on first approval; an existing row is
+  // never upgraded or overwritten (opening `draft` stays an owner action on both the global and client rows).
+  await c.env.DB.prepare(
+    "INSERT OR IGNORE INTO ai_clients (name, scopes, client_id, created_at) VALUES ('client:' || ?1, 'read', ?1, ?2)",
+  )
+    .bind(request.clientId, Date.now())
+    .run();
+
   const helpers = c.env.OAUTH_PROVIDER!;
   const client = await helpers.lookupClient(request.clientId);
   const { redirectTo } = await helpers.completeAuthorization({

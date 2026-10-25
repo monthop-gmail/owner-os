@@ -37,7 +37,7 @@ beforeAll(async () => {
   });
   expect(summary.failures).toEqual([]);
   draftToken = (await obtainToken("read offline_access draft")).access_token;
-  await env.DB.prepare("UPDATE ai_clients SET rate_per_minute = 100000, rate_per_day = 100000 WHERE name = 'mcp-default'").run();
+  await env.DB.prepare("UPDATE ai_clients SET rate_per_minute = 100000, rate_per_day = 100000 WHERE client_id IS NOT NULL").run();
 
   const { assets } = (await api("GET", "/api/assets")).body as { assets: { id: string; name: string }[] };
   durianId = assets.find((a) => a.name.includes("ทุเรียน"))!.id;
@@ -85,7 +85,7 @@ async function count(table: string, where = "1 = 1", ...binds: unknown[]): Promi
 }
 
 async function setCeiling(scopes: string): Promise<void> {
-  await env.DB.prepare("UPDATE ai_clients SET scopes = ? WHERE name = 'mcp-default'").bind(scopes).run();
+  await env.DB.prepare("UPDATE ai_clients SET scopes = ? WHERE name = 'mcp-default' OR client_id IS NOT NULL").bind(scopes).run();
 }
 
 const eventArgs = (damage = 40) => ({
