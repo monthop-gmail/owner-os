@@ -1,6 +1,7 @@
 {
   "name": "owner-os",
   "private": true,
+  "license": "MIT",
   "packageManager": "pnpm@9.15.9",
   "engines": {
     "node": ">=20"
