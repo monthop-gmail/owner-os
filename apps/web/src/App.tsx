@@ -1,6 +1,7 @@
 import type { Asset, AssetKind, WorkOrderStatus } from "@owner-os/shared";
 import { lazy, Suspense, useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { apiGet, ApiError, clearToken, getToken, setToken, UNAUTHORIZED_EVENT } from "./api";
+import { DraftsInbox, PendingDraftsBadge } from "./DraftsInbox";
 
 export type AssetListItem = Asset & {
   unit_count: number;
@@ -35,27 +36,28 @@ function errorMessage(err: unknown): string {
   return "เชื่อมต่อเซิร์ฟเวอร์ไม่ได้";
 }
 
-/** Minimal hash routing: "#/assets/<id>" opens the detail page, anything else is the list. */
+/** Minimal hash routing: "#/assets/<id>" opens the detail page, "#/drafts" the AI drafts inbox, anything else is the list. */
 function assetIdFromHash(hash: string): string | null {
   const match = /^#\/assets\/([^/]+)$/.exec(hash);
   return match?.[1] ? decodeURIComponent(match[1]) : null;
 }
 
-function useHashAssetId(): string | null {
-  const [assetId, setAssetId] = useState(() => assetIdFromHash(window.location.hash));
+function useHash(): string {
+  const [hash, setHash] = useState(() => window.location.hash);
   useEffect(() => {
-    const onHashChange = () => setAssetId(assetIdFromHash(window.location.hash));
+    const onHashChange = () => setHash(window.location.hash);
     window.addEventListener("hashchange", onHashChange);
     return () => window.removeEventListener("hashchange", onHashChange);
   }, []);
-  return assetId;
+  return hash;
 }
 
 export function App() {
   const [token, setTokenState] = useState<string | null>(() => getToken());
   const [assets, setAssets] = useState<AssetListItem[] | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const assetId = useHashAssetId();
+  const hash = useHash();
+  const assetId = assetIdFromHash(hash);
   // Only a session that was signed in gets the "token no longer valid" notice; a wrong token typed on the
   // token screen already shows its own error.
   const signedInRef = useRef(token !== null);
@@ -94,6 +96,8 @@ export function App() {
         <Suspense fallback={<p className="text-slate-500">กำลังโหลดแผนที่…</p>}>
           <AssetDetail key={assetId} assetId={assetId} onBack={() => (window.location.hash = "")} />
         </Suspense>
+      ) : token && hash === "#/drafts" ? (
+        <DraftsInbox assets={assets} onBack={() => (window.location.hash = "")} />
       ) : token ? (
         <AssetsScreen initial={assets} onLoaded={setAssets} onLogout={logout} />
       ) : (
@@ -188,6 +192,7 @@ function AssetsScreen(props: {
       <div className="flex items-center justify-between gap-2">
         <h2 className="text-lg font-semibold">สินทรัพย์</h2>
         <div className="flex gap-2">
+          <PendingDraftsBadge />
           <button type="button" onClick={() => void load()} className="rounded-lg border border-slate-300 px-3 py-2">
             รีเฟรช
           </button>

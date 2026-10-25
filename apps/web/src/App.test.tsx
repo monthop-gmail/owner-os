@@ -35,7 +35,11 @@ let fetchMock: ReturnType<typeof vi.fn>;
 beforeEach(() => {
   localStorage.clear();
   fetchMock = vi.fn();
-  vi.stubGlobal("fetch", fetchMock);
+  // The asset list header also loads the pending AI drafts count (DraftsInbox.test.tsx covers it);
+  // answer it separately so these tests keep asserting only their own calls.
+  vi.stubGlobal("fetch", (input: RequestInfo | URL, init?: RequestInit) =>
+    String(input).startsWith("/api/ai-drafts") ? Promise.resolve(jsonResponse(200, { drafts: [] })) : (fetchMock as unknown as typeof fetch)(input, init),
+  );
 });
 
 afterEach(() => {
