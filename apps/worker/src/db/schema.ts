@@ -238,3 +238,23 @@ export const ai_clients = sqliteTable("ai_clients", {
 });
 
 export type AiClient = typeof ai_clients.$inferSelect;
+
+// One row per MCP tools/call. Stores who/which tool/outcome only — never arguments, results or emails.
+export const mcp_audit = sqliteTable(
+  "mcp_audit",
+  {
+    id: text("id").primaryKey(),
+    at: integer("at").notNull(),
+    /** Same opaque hash as the OAuth grant's userId. */
+    user_hash: text("user_hash").notNull(),
+    /** DCR client_id of the token. */
+    client_id: text("client_id").notNull(),
+    tool: text("tool").notNull(),
+    ok: integer("ok").notNull(),
+    error_code: text("error_code"),
+    ms: integer("ms").notNull(),
+  },
+  (t) => [index("mcp_audit_at_idx").on(t.at), check("mcp_audit_ok_bool", sql`${t.ok} IN (0, 1)`)],
+);
+
+export type McpAuditRow = typeof mcp_audit.$inferSelect;

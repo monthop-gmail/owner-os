@@ -19,7 +19,19 @@ export let otherKey: CryptoKey;
 export let publicJwk: JsonWebKey;
 export let clientId: string;
 
-export const ctx = { waitUntil() {}, passThroughOnException() {}, props: {} } as unknown as ExecutionContext;
+/** Promises handed to ctx.waitUntil (e.g. MCP audit writes); await with flushWaitUntil(). */
+const pendingWaitUntil: Promise<unknown>[] = [];
+export const ctx = {
+  waitUntil(p: Promise<unknown>) {
+    pendingWaitUntil.push(p);
+  },
+  passThroughOnException() {},
+  props: {},
+} as unknown as ExecutionContext;
+
+export async function flushWaitUntil(): Promise<void> {
+  await Promise.all(pendingWaitUntil.splice(0));
+}
 const encoder = new TextEncoder();
 
 export function b64url(data: Uint8Array | string): string {

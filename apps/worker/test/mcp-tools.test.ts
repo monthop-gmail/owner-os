@@ -5,7 +5,8 @@ import { resetAccessCertsCache } from "../src/mcp/access-jwt";
 import { apiPath, DEFAULT_PROTOCOL_VERSION, INSTRUCTIONS, isSafeInternalPath, mcpApiHandler } from "../src/mcp/server";
 import { seedDemo, type DemoFixture } from "../src/seed/demo";
 import { authHeader, TEST_API_TOKEN } from "./d1";
-import { call, ctx, env, obtainToken, setupOAuthHarness, teardownOAuthHarness } from "./mcp-helpers";
+import { opaqueUserId } from "../src/mcp/oauth";
+import { call, clientId, ctx, env, flushWaitUntil, obtainToken, OWNER, setupOAuthHarness, teardownOAuthHarness } from "./mcp-helpers";
 
 type RpcBody = { jsonrpc: string; id: unknown; result?: Record<string, unknown>; error?: { code: number; message: string } };
 type ToolResult = { content: { type: string; text: string }[]; structuredContent?: unknown; isError?: boolean };
@@ -258,5 +259,104 @@ describe("P2: tool arguments cannot steer the internal path", () => {
     expect(isSafeInternalPath("/api/assetsX", "/api/assets")).toBe(false);
     expect(isSafeInternalPath("//evil.example/api/assets", "/api/assets")).toBe(false);
     expect(isSafeInternalPath("/api/tasks/x", "/api/assets")).toBe(false);
+  });
+});
+
+describe("work order and evidence tools", () => {
+  async function durianId(): Promise<string> {
+    const { assets } = (await apiGet("/api/assets")) as { assets: { id: string; name: string }[] };
+    return assets.find((a) => a.name.includes("ทุเรียน"))!.id;
+  }
+
+  it("list_work_orders equals REST, with and without status", async () => {
+    const id = await durianId();
+    const all = await callTool("list_work_orders", { asset_id: id });
+    const expected = (await apiGet(`/api/assets/${id}/work-orders`)) as { work_orders: unknown[] };
+    expect(all.structuredContent).toEqual(expected);
+    expect(expected.work_orders.length).toBeGreaterThan(0);
+    const submitted = await callTool("list_work_orders", { asset_id: id, status: "submitted" });
+    expect(submitted.structuredContent).toEqual(await apiGet(`/api/assets/${id}/work-orders?status=submitted`));
+  });
+
+  it("list_work_orders rejects bad status / unknown asset", async () => {
+    expect(errorCode(await callTool("list_work_orders", { asset_id: "x", status: "done" }))).toBe("validation_error");
+    expect(errorCode(await callTool("list_work_orders", { asset_id: "x", status: "open&a=b" }))).toBe("validation_error");
+    expect(errorCode(await callTool("list_work_orders", { status: "open" }))).toBe("validation_error");
+    expect(errorCode(await callTool("list_work_orders", { asset_id: "nope" }))).toBe("asset_not_found");
+  });
+
+  it("get_work_order equals GET /api/tasks/:id (evidence metadata only)", async () => {
+    const id = await durianId();
+    const { work_orders } = (await apiGet(`/api/assets/${id}/work-orders?status=submitted`)) as {
+      work_orders: { id: string }[];
+    };
+    const woId = work_orders[0]!.id;
+    const result = await callTool("get_work_order", { work_order_id: woId });
+    const expected = (await apiGet(`/api/tasks/${woId}`)) as { evidence: unknown[] };
+    expect(result.structuredContent).toEqual(expected);
+    expect(expected.evidence.length).toBeGreaterThan(0);
+    expect(errorCode(await callTool("get_work_order", { work_order_id: "../assets" }))).toBe("validation_error");
+  });
+
+  it("list_evidence equals REST for default, asset filter and limit", async () => {
+    const id = await durianId();
+    expect((await callTool("list_evidence")).structuredContent).toEqual(await apiGet("/api/evidence?limit=50"));
+    expect((await callTool("list_evidence", { asset_id: id, limit: 1 })).structuredContent).toEqual(
+      await apiGet(`/api/evidence?asset_id=${id}&limit=1`),
+    );
+    const all = (await apiGet("/api/evidence")) as { evidence: unknown[] };
+    expect(all.evidence.length).toBe(3);
+    for (const limit of [0, 101, 1.5, "10"]) {
+      expect(errorCode(await callTool("list_evidence", { limit }))).toBe("validation_error");
+    }
+    expect(errorCode(await callTool("list_evidence", { asset_id: "a/b" }))).toBe("validation_error");
+  });
+
+  it("list_evidence description says coordinates are field-reported", async () => {
+    const tools = (await rpc("tools/list")).result?.tools as { name: string; description: string }[];
+    expect(tools.find((t) => t.name === "list_evidence")?.description).toContain("ค่าที่ภาคสนามแจ้ง");
+    expect(tools.some((t) => /image|slip/i.test(t.name))).toBe(false);
+  });
+});
+
+describe("mcp_audit", () => {
+  it("writes one row per tools/call with ok/error_code and no arguments or emails", async () => {
+    await flushWaitUntil();
+    await env.DB.prepare("DELETE FROM mcp_audit").run();
+    const id = (await apiGet("/api/assets")) as { assets: { id: string }[] };
+    const assetId = id.assets[0]!.id;
+    await callTool("list_assets");
+    await callTool("get_asset", { asset_id: assetId });
+    await callTool("get_asset", { asset_id: "../tasks" });
+    await flushWaitUntil();
+
+    const { results } = await env.DB.prepare("SELECT * FROM mcp_audit ORDER BY at, rowid").all<Record<string, unknown>>();
+    expect(results.map((r) => [r.tool, r.ok, r.error_code])).toEqual([
+      ["list_assets", 1, null],
+      ["get_asset", 1, null],
+      ["get_asset", 0, "validation_error"],
+    ]);
+    const userHash = await opaqueUserId(OWNER);
+    for (const row of results) {
+      expect(row.user_hash).toBe(userHash);
+      expect(row.client_id).toBe(clientId);
+      expect(typeof row.ms).toBe("number");
+      const text = JSON.stringify(row);
+      expect(text).not.toContain(OWNER);
+      expect(text).not.toContain("@");
+      expect(text).not.toContain(assetId);
+      expect(text).not.toContain("../tasks");
+    }
+  });
+
+  it("an audit write failure does not fail the tool", async () => {
+    await env.DB.prepare("ALTER TABLE mcp_audit RENAME TO mcp_audit_off").run();
+    try {
+      const result = await callTool("list_assets");
+      await flushWaitUntil();
+      expect(result.isError).toBeUndefined();
+    } finally {
+      await env.DB.prepare("ALTER TABLE mcp_audit_off RENAME TO mcp_audit").run();
+    }
   });
 });
