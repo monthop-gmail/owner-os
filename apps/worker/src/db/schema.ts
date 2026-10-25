@@ -254,7 +254,12 @@ export const mcp_audit = sqliteTable(
     error_code: text("error_code"),
     ms: integer("ms").notNull(),
   },
-  (t) => [index("mcp_audit_at_idx").on(t.at), check("mcp_audit_ok_bool", sql`${t.ok} IN (0, 1)`)],
+  (t) => [
+    index("mcp_audit_at_idx").on(t.at),
+    // Per-client rate limit counts (client_id = ? AND at > ?).
+    index("mcp_audit_client_at_idx").on(t.client_id, t.at),
+    check("mcp_audit_ok_bool", sql`${t.ok} IN (0, 1)`),
+  ],
 );
 
 export type McpAuditRow = typeof mcp_audit.$inferSelect;

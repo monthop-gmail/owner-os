@@ -39,4 +39,4 @@
 - [x] Task 5.1a-1: OAuth + consent + ai_clients
 - [x] Task 5.1a-2: /mcp JSON-RPC + list_assets/get_asset
 - [x] Task 5.1b-1: ปิด path injection ของ MCP + tool อ่านงาน/หลักฐาน 3 ตัว + mcp_audit
-- [ ] Task 5.1b-2: tool รอบปลูก/ผลผลิต/เหตุภัย + rate limit
+- [x] Task 5.1b-2: tool รอบปลูก/ผลผลิต/สัญญา/เหตุภัย + rate limit ต่อ client + cache OAuthProvider

@@ -71,6 +71,13 @@
       "when": 1792897464793,
       "tag": "0009_mcp_audit",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1792902942279,
+      "tag": "0010_mcp_audit_client_idx",
+      "breakpoints": true
     }
   ]
 }

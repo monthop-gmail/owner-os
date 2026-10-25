@@ -44,10 +44,27 @@ app.route("/api/crop-cycles", cycleDisasterRoutes);
 
 const defaultHandler = { fetch: (request: Request, env: Env, ctx: ExecutionContext) => app.fetch(request, env, ctx) };
 
+// One OAuthProvider per isolate and origin (its resource URL is origin-specific). The provider
+// receives env on every fetch; the only env value it captures is MCP_ALLOWED_REDIRECT_HOSTS (for
+// the DCR callback), so that value is part of the cache key.
+const MAX_CACHED_PROVIDERS = 16;
+const providers = new Map<string, ReturnType<typeof createOAuthProvider>>();
+
+export function getOAuthProvider(env: Env, origin: string): ReturnType<typeof createOAuthProvider> {
+  const key = `${origin}\n${env.MCP_ALLOWED_REDIRECT_HOSTS ?? ""}`;
+  let provider = providers.get(key);
+  if (!provider) {
+    if (providers.size >= MAX_CACHED_PROVIDERS) providers.clear();
+    provider = createOAuthProvider(env, origin, defaultHandler);
+    providers.set(key, provider);
+  }
+  return provider;
+}
+
 // OAuthProvider serves /oauth/token, /oauth/register and metadata, guards /mcp with OAuth tokens,
 // and passes every other request to the Hono app unchanged.
 export default {
   fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-    return createOAuthProvider(env, new URL(request.url).origin, defaultHandler).fetch(request, env, ctx);
+    return getOAuthProvider(env, new URL(request.url).origin).fetch(request, env, ctx);
   },
 } satisfies ExportedHandler<Env>;

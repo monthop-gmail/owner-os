@@ -80,6 +80,32 @@ function onlyKeys(args: Record<string, unknown>, allowed: string[]): boolean {
   return Object.keys(args).every((k) => allowed.includes(k));
 }
 
+/** A read tool taking exactly one required id argument `key`, which becomes a validated path segment. */
+function idTool(spec: {
+  name: string;
+  title: string;
+  description: string;
+  key: string;
+  prefix: string;
+  path: (id: ArgSegment) => string | null;
+}): Tool {
+  return {
+    name: spec.name,
+    title: spec.title,
+    description: spec.description,
+    inputSchema: {
+      type: "object",
+      properties: { [spec.key]: { type: "string", pattern: SAFE_SEGMENT.source } },
+      required: [spec.key],
+      additionalProperties: false,
+    },
+    annotations: { readOnlyHint: true },
+    scope: "read",
+    prefix: spec.prefix,
+    path: (args) => (onlyKeys(args, [spec.key]) ? spec.path(arg(args[spec.key])) : null),
+  };
+}
+
 const TOOLS: Tool[] = [
   {
     name: "list_assets",
@@ -170,6 +196,48 @@ const TOOLS: Tool[] = [
       return withQuery(apiPath("api", "evidence"), { asset_id, limit: String(limit) });
     },
   },
+  idTool({
+    name: "list_crop_cycles",
+    title: "รอบปลูกของแปลง",
+    description: "List crop cycles of one unit/plot (same fields as GET /api/units/:id/crop-cycles).",
+    key: "unit_id",
+    prefix: "/api/units",
+    path: (id) => apiPath("api", "units", id, "crop-cycles"),
+  }),
+  idTool({
+    name: "list_harvest_logs",
+    title: "บันทึกผลผลิต",
+    description:
+      "List harvest logs of one crop cycle with totals (same fields as GET /api/crop-cycles/:id/harvest-logs). Weighing-slip images are not returned.",
+    key: "crop_cycle_id",
+    prefix: "/api/crop-cycles",
+    path: (id) => apiPath("api", "crop-cycles", id, "harvest-logs"),
+  }),
+  idTool({
+    name: "list_contracts",
+    title: "สัญญาของสินทรัพย์",
+    description:
+      "List contracts of one asset (same fields as GET /api/assets/:id/contracts). ตัวเลขและกติกาทั้งหมดเป็นร่าง draft_unconfirmed",
+    key: "asset_id",
+    prefix: "/api/assets",
+    path: (id) => apiPath("api", "assets", id, "contracts"),
+  }),
+  idTool({
+    name: "list_disaster_events",
+    title: "เหตุภัยของสินทรัพย์",
+    description: "List disaster events of one asset (same fields as GET /api/assets/:id/disaster-events).",
+    key: "asset_id",
+    prefix: "/api/assets",
+    path: (id) => apiPath("api", "assets", id, "disaster-events"),
+  }),
+  idTool({
+    name: "get_disaster_impact",
+    title: "ผลกระทบภัยต่อรอบปลูก",
+    description: "Disaster impact on one crop cycle (same fields as GET /api/crop-cycles/:id/disaster-impact).",
+    key: "crop_cycle_id",
+    prefix: "/api/crop-cycles",
+    path: (id) => apiPath("api", "crop-cycles", id, "disaster-impact"),
+  }),
 ];
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -194,6 +262,14 @@ type ToolOutcome = { result: ToolResult; errorCode: string | null };
 
 function toolError(code: string): ToolOutcome {
   return { result: { content: [{ type: "text", text: JSON.stringify({ error: code }) }], isError: true }, errorCode: code };
+}
+
+function rateLimited(window: "per_minute" | "per_day"): ToolOutcome {
+  const message = window === "per_minute" ? "rate limit exceeded (per minute)" : "rate limit exceeded (per day)";
+  return {
+    result: { content: [{ type: "text", text: JSON.stringify({ error: "rate_limited", window, message }) }], isError: true },
+    errorCode: "rate_limited",
+  };
 }
 
 /** Internal read request: always GET with the server-side API_TOKEN; tools cannot choose the method. */
@@ -248,14 +324,48 @@ async function writeAudit(
   }
 }
 
-/** Effective scopes = token scopes ∩ the `mcp-default` row's scopes; null when the row is missing or revoked. */
-async function clientScopes(env: Env, tokenScopes: string[]): Promise<string[] | null> {
-  const row = await env.DB.prepare("SELECT scopes, revoked_at FROM ai_clients WHERE name = ?")
+type ClientGrant = { scopes: string[]; ratePerMinute: number; ratePerDay: number };
+
+/** Effective scopes = token scopes ∩ the `mcp-default` row's scopes, plus its rate limits; null when missing or revoked. */
+async function clientGrant(env: Env, tokenScopes: string[]): Promise<ClientGrant | null> {
+  const row = await env.DB.prepare(
+    "SELECT scopes, revoked_at, rate_per_minute, rate_per_day FROM ai_clients WHERE name = ?",
+  )
     .bind(MCP_DEFAULT_CLIENT)
-    .first<{ scopes: string; revoked_at: number | null }>();
+    .first<{ scopes: string; revoked_at: number | null; rate_per_minute: number; rate_per_day: number }>();
   if (!row || row.revoked_at !== null) return null;
   const allowed = row.scopes.split(/\s+/).filter(Boolean);
-  return tokenScopes.filter((s) => allowed.includes(s));
+  return {
+    scopes: tokenScopes.filter((s) => allowed.includes(s)),
+    ratePerMinute: row.rate_per_minute,
+    ratePerDay: row.rate_per_day,
+  };
+}
+
+const MINUTE_MS = 60_000;
+const DAY_MS = 24 * 60 * MINUTE_MS;
+
+/**
+ * Per-DCR-client limit counted from mcp_audit rows (index on client_id, at). This is read-then-decide,
+ * not atomic: concurrent calls (and audit rows still pending in waitUntil) can overshoot slightly.
+ */
+async function rateLimitExceeded(env: Env, clientId: string, grant: ClientGrant): Promise<"per_minute" | "per_day" | null> {
+  const now = Date.now();
+  let row: { day: number; minute: number } | null;
+  try {
+    row = await env.DB.prepare(
+      "SELECT COUNT(*) AS day, COALESCE(SUM(at > ?1), 0) AS minute FROM mcp_audit WHERE client_id = ?2 AND at > ?3",
+    )
+      .bind(now - MINUTE_MS, clientId, now - DAY_MS)
+      .first<{ day: number; minute: number }>();
+  } catch (err) {
+    // Like audit writes, a broken audit table must not take the read-only tools down: fail open, but log.
+    console.warn("mcp rate limit check failed", err instanceof Error ? err.message : "unknown");
+    return null;
+  }
+  if ((row?.minute ?? 0) >= grant.ratePerMinute) return "per_minute";
+  if ((row?.day ?? 0) >= grant.ratePerDay) return "per_day";
+  return null;
 }
 
 /** OAuthProvider adds `auth` (token scopes, grant userId, DCR clientId) to the context it hands the API handler. */
@@ -264,8 +374,8 @@ type McpContext = ExecutionContext & { auth?: McpAuth };
 /** OAuthProvider apiHandler: only reached with a valid access token for /mcp. */
 export const mcpApiHandler = {
   async fetch(request: Request, env: Env, ctx: McpContext): Promise<Response> {
-    const scopes = await clientScopes(env, ctx.auth?.scope ?? []);
-    if (!scopes) {
+    const grant = await clientGrant(env, ctx.auth?.scope ?? []);
+    if (!grant) {
       return Response.json(
         { error: "client_revoked" },
         { status: 401, headers: { "WWW-Authenticate": 'Bearer error="invalid_token"' } },
@@ -316,7 +426,12 @@ export const mcpApiHandler = {
         const started = Date.now();
         const tool = TOOLS.find((t) => t.name === params.name);
         // The AI-supplied name is only stored when it is one of ours.
-        const outcome = tool ? await callTool(tool, params.arguments, scopes, env) : null;
+        const limited = await rateLimitExceeded(env, ctx.auth?.clientId ?? "", grant);
+        const outcome = limited
+          ? rateLimited(limited)
+          : tool
+            ? await callTool(tool, params.arguments, grant.scopes, env)
+            : null;
         const audit = writeAudit(env, ctx.auth, {
           tool: tool?.name ?? "(unknown)",
           errorCode: outcome ? outcome.errorCode : "unknown_tool",
