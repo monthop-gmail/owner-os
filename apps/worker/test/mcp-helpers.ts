@@ -111,8 +111,11 @@ export async function obtainToken(scope?: string): Promise<{ access_token: strin
   const page = await getConsent(authorizeQuery(challenge, scope), jwt);
   expect(page.status).toBe(200);
   const approve = await postConsent({ csrf: csrfFrom(await page.text()), decision: "approve" }, jwt);
-  expect(approve.status).toBe(302);
-  const location = new URL(approve.headers.get("location") ?? "");
+  expect(approve.status).toBe(200);
+  const approvalHtml = await approve.text();
+  const redirect = /<meta http-equiv="refresh" content="1;url=([^"]+)"/.exec(approvalHtml)?.[1];
+  expect(redirect).toBeTruthy();
+  const location = new URL(redirect!.replace(/&#(\d+);/g, (_match, code: string) => String.fromCodePoint(Number(code))));
   expect(`${location.origin}${location.pathname}`).toBe(REDIRECT);
   expect(location.searchParams.get("state")).toBe("state-123");
   const code = location.searchParams.get("code") ?? "";

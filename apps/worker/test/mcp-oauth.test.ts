@@ -87,7 +87,8 @@ describe("consent CSRF", () => {
     const { challenge } = await pkce();
     const csrf = csrfFrom(await (await getConsent(authorizeQuery(challenge), jwt)).text());
     const first = await postConsent({ csrf, decision: "approve" }, jwt);
-    expect(first.status).toBe(302);
+    expect(first.status).toBe(200);
+    expect(await first.text()).toContain("อนุญาตแล้ว");
     const again = await postConsent({ csrf, decision: "approve" }, jwt);
     expect(again.status).toBe(403);
   });
@@ -97,7 +98,7 @@ describe("consent CSRF", () => {
     const { challenge } = await pkce();
     const csrf = csrfFrom(await (await getConsent(authorizeQuery(challenge), jwt)).text());
     const res = await postConsent({ csrf, decision: "deny" }, jwt);
-    expect(res.status).toBe(302);
+    expect(res.status).toBe(303);
     const location = new URL(res.headers.get("location") ?? "");
     expect(location.searchParams.get("error")).toBe("access_denied");
     expect(location.searchParams.get("code")).toBeNull();
@@ -117,6 +118,26 @@ describe("dynamic client registration", () => {
 
   it("rejects http redirect_uris even on an allowed host", async () => {
     const res = await register(["http://claude.ai/api/mcp/auth_callback"]);
+    expect(res.status).toBe(400);
+  });
+
+  it.each([
+    "http://localhost:43127/callback",
+    "http://127.0.0.1:43127/callback",
+    "http://[::1]:43127/callback",
+  ])("accepts native-app loopback redirect %s", async (redirectUri) => {
+    const res = await register([redirectUri]);
+    expect(res.status).toBe(201);
+  });
+
+  it.each([
+    "http://localhost/callback",
+    "http://localhost:80/callback",
+    "http://127.0.0.2:43127/callback",
+    "http://localhost.evil.example:43127/callback",
+    "http://localhost:43127/callback#fragment",
+  ])("rejects unsafe or non-explicit loopback redirect %s", async (redirectUri) => {
+    const res = await register([redirectUri]);
     expect(res.status).toBe(400);
   });
 

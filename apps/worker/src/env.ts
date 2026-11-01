@@ -13,9 +13,9 @@ export type Env = {
   ACCESS_TEAM_DOMAIN?: string;
   /** Cloudflare Access application audience tag protecting /oauth/authorize. */
   ACCESS_AUD?: string;
-  /** Comma-separated owner emails allowed to approve OAuth consent. */
+  /** Comma-separated owner emails or @domains allowed to approve OAuth consent. */
   OWNER_EMAILS?: string;
-  /** Comma-separated hosts allowed in DCR/authorize redirect_uri (https only). */
+  /** Comma-separated HTTPS redirect hosts; HTTP is allowed only for explicit-port native-app loopback URIs. */
   MCP_ALLOWED_REDIRECT_HOSTS?: string;
   /** Dynamic client registration (/oauth/register) is accepted only when exactly "true". Default "false". */
   MCP_DCR_ENABLED?: string;
