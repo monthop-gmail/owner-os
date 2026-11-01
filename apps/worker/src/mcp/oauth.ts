@@ -29,8 +29,9 @@ export function allowedRedirectHosts(env: Env): string[] {
 }
 
 /**
- * HTTPS redirects must use an exact allowlisted host. Native OAuth clients may additionally use an
- * explicit-port HTTP loopback redirect; never extend this exception to arbitrary HTTP hosts.
+ * HTTPS redirects must use an exact allowlisted host. Only when MCP_ALLOW_LOOPBACK_REDIRECTS is exactly "true",
+ * native OAuth clients may additionally use an explicit-port HTTP loopback redirect; never extend this exception
+ * to arbitrary HTTP hosts.
  */
 export function isAllowedRedirectUri(uri: unknown, env: Env): boolean {
   if (typeof uri !== "string") return false;
@@ -42,6 +43,7 @@ export function isAllowedRedirectUri(uri: unknown, env: Env): boolean {
   }
   if (url.username || url.password || url.hash) return false;
   if (url.protocol === "https:") return allowedRedirectHosts(env).includes(url.hostname.toLowerCase());
+  if (env.MCP_ALLOW_LOOPBACK_REDIRECTS !== "true") return false;
   const loopbackHosts = new Set(["localhost", "127.0.0.1", "[::1]"]);
   return url.protocol === "http:" && loopbackHosts.has(url.hostname.toLowerCase()) && url.port !== "";
 }
@@ -164,10 +166,7 @@ oauthRoutes.use("/authorize", async (c, next) => {
     if (err instanceof AccessJwtError) return c.json({ error: "forbidden" }, 403);
     throw err;
   }
-  const isOwner = cfg.owners.some((owner) =>
-    owner.startsWith("@") ? email.endsWith(owner) : email === owner,
-  );
-  if (!isOwner) return c.json({ error: "forbidden" }, 403);
+  if (!cfg.owners.includes(email)) return c.json({ error: "forbidden" }, 403);
   c.set("cfg", cfg);
   c.set("email", email);
   await next();
@@ -227,7 +226,7 @@ oauthRoutes.post("/authorize", async (c) => {
     const url = new URL(request.redirectUri);
     url.searchParams.set("error", "access_denied");
     if (request.state) url.searchParams.set("state", request.state);
-    return c.redirect(url.toString(), 303);
+    return c.html(returnPage("ปฏิเสธแล้ว", url.toString()), 200, SECURITY_HEADERS);
   }
 
   // Per-client row (ceiling, revocation, rate limits). Created read-only on first approval; an existing row is
@@ -245,22 +244,26 @@ oauthRoutes.post("/authorize", async (c) => {
     scope: request.scope,
     props: { email },
   });
-  const target = escapeHtml(redirectTo);
-  return c.html(
-    `<!doctype html><html lang="th"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<meta http-equiv="refresh" content="1;url=${target}"><title>อนุญาตแล้ว · owner-os</title></head>
-<body style="font-family:system-ui,sans-serif;max-width:36rem;margin:3rem auto;padding:0 1rem">
-<h1>อนุญาตแล้ว</h1><p>กำลังกลับไป Cloudflare MCP Portal...</p>
-<p>ถ้าหน้าไม่เปลี่ยน ให้ <a href="${target}" rel="noreferrer">กดที่นี่เพื่อกลับไป Cloudflare</a></p>
-</body></html>`,
-    200,
-    SECURITY_HEADERS,
-  );
+  return c.html(returnPage("อนุญาตแล้ว", redirectTo), 200, SECURITY_HEADERS);
 });
 
 /**
+ * Post-consent page that sends the browser back to the client's redirect_uri. A 302/303 after the form POST would
+ * be blocked by CSP `form-action 'self'` (cross-origin redirect), so navigate with meta refresh plus a link instead.
+ */
+function returnPage(title: string, redirectTo: string): string {
+  const target = escapeHtml(redirectTo);
+  return `<!doctype html><html lang="th"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="refresh" content="1;url=${target}"><title>${escapeHtml(title)} · owner-os</title></head>
+<body style="font-family:system-ui,sans-serif;max-width:36rem;margin:3rem auto;padding:0 1rem">
+<h1>${escapeHtml(title)}</h1><p>กำลังกลับไปยังแอปที่ขอสิทธิ์...</p>
+<p>ถ้าหน้าไม่เปลี่ยน ให้ <a href="${target}" rel="noreferrer">กดที่นี่เพื่อกลับไปยังแอป</a></p>
+</body></html>`;
+}
+
+/**
  * Builds the OAuth provider for this request's origin (the resource URL must be absolute).
- * DCR accepts HTTPS on allowlisted hosts and native-app HTTP loopback redirects only.
+ * DCR accepts HTTPS on allowlisted hosts, plus native-app HTTP loopback redirects when MCP_ALLOW_LOOPBACK_REDIRECTS is "true".
  */
 export function createOAuthProvider(
   env: Env,
@@ -286,7 +289,7 @@ export function createOAuthProvider(
       if (!Array.isArray(uris) || uris.length === 0 || !uris.every((u) => isAllowedRedirectUri(u, env))) {
         return {
           code: "invalid_redirect_uri",
-          description: "redirect_uris must be https on an allowed host or http on loopback with an explicit port",
+          description: "redirect_uris must be https on an allowed host (or http on loopback with an explicit port, if enabled)",
         };
       }
     },

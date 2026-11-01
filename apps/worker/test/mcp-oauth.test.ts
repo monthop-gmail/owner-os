@@ -13,6 +13,7 @@ import {
   postConsent,
   register,
   REDIRECT,
+  returnTargetFrom,
   setupOAuthHarness,
   signJwt,
   teardownOAuthHarness,
@@ -50,6 +51,15 @@ describe("Access JWT on /oauth/authorize", () => {
   ])("rejects %s with 403", async (_name, make) => {
     const { challenge } = await pkce();
     const res = await getConsent(authorizeQuery(challenge), await make());
+    expect(res.status).toBe(403);
+  });
+
+  it("OWNER_EMAILS matches exact emails only: an @domain entry does not grant x@example.com", async () => {
+    const { challenge } = await pkce();
+    const res = await getConsent(authorizeQuery(challenge), await signJwt({ email: "x@example.com" }), {
+      ...env,
+      OWNER_EMAILS: "@example.com",
+    });
     expect(res.status).toBe(403);
   });
 
@@ -93,15 +103,34 @@ describe("consent CSRF", () => {
     expect(again.status).toBe(403);
   });
 
-  it("deny redirects back with access_denied", async () => {
+  it("deny renders a ปฏิเสธแล้ว page that sends the browser back with access_denied and state", async () => {
     const jwt = await signJwt({});
     const { challenge } = await pkce();
     const csrf = csrfFrom(await (await getConsent(authorizeQuery(challenge), jwt)).text());
     const res = await postConsent({ csrf, decision: "deny" }, jwt);
-    expect(res.status).toBe(303);
-    const location = new URL(res.headers.get("location") ?? "");
-    expect(location.searchParams.get("error")).toBe("access_denied");
-    expect(location.searchParams.get("code")).toBeNull();
+    expect(res.status).toBe(200);
+    expect(res.headers.get("location")).toBeNull();
+    expect(res.headers.get("cache-control")).toBe("no-store");
+    const html = await res.text();
+    expect(html).toContain("ปฏิเสธแล้ว");
+    expect(html).toContain("กำลังกลับไปยังแอปที่ขอสิทธิ์");
+    expect(html).not.toContain("Cloudflare MCP Portal");
+    const target = returnTargetFrom(html);
+    expect(`${target.origin}${target.pathname}`).toBe(REDIRECT);
+    expect(target.searchParams.get("error")).toBe("access_denied");
+    expect(target.searchParams.get("state")).toBe("state-123");
+    expect(target.searchParams.get("code")).toBeNull();
+  });
+
+  it("approve renders an อนุญาตแล้ว page that sends the browser back with code and state", async () => {
+    const jwt = await signJwt({});
+    const { challenge } = await pkce();
+    const csrf = csrfFrom(await (await getConsent(authorizeQuery(challenge), jwt)).text());
+    const res = await postConsent({ csrf, decision: "approve" }, jwt);
+    expect(res.status).toBe(200);
+    const target = returnTargetFrom(await res.text());
+    expect(target.searchParams.get("code")).toBeTruthy();
+    expect(target.searchParams.get("state")).toBe("state-123");
   });
 
   it("POST also requires a valid Access JWT", async () => {
@@ -139,6 +168,34 @@ describe("dynamic client registration", () => {
   ])("rejects unsafe or non-explicit loopback redirect %s", async (redirectUri) => {
     const res = await register([redirectUri]);
     expect(res.status).toBe(400);
+  });
+
+  it.each([
+    ["unset", undefined, "http://localhost:2001"],
+    ["false", "false", "http://localhost:2002"],
+    ["True", "True", "http://localhost:2003"],
+  ])("MCP_ALLOW_LOOPBACK_REDIRECTS %s → loopback registration 400", async (_name, flag, origin) => {
+    const res = await register(["http://127.0.0.1:43127/callback"], { ...env, MCP_ALLOW_LOOPBACK_REDIRECTS: flag }, origin);
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ error: "invalid_redirect_uri" });
+  });
+
+  it("MCP_ALLOW_LOOPBACK_REDIRECTS off → authorize rejects a loopback redirect registered while it was on", async () => {
+    const loopback = "http://127.0.0.1:43127/callback";
+    const reg = await register([loopback]);
+    expect(reg.status).toBe(201);
+    const { client_id } = (await reg.json()) as { client_id: string };
+    const { challenge } = await pkce();
+    const query = authorizeQuery(challenge, "read", client_id, loopback);
+    expect((await getConsent(query, await signJwt({}))).status).toBe(200);
+    const off = await getConsent(query, await signJwt({}), { ...env, MCP_ALLOW_LOOPBACK_REDIRECTS: "false" });
+    expect(off.status).toBe(400);
+  });
+
+  it('wrangler.toml ships MCP_ALLOW_LOOPBACK_REDIRECTS = "false"', async () => {
+    const fs = (await import("node:fs" as string)) as { readFileSync(p: URL, e: "utf8"): string };
+    const toml = fs.readFileSync(new URL("../wrangler.toml", (import.meta as ImportMeta & { url: string }).url), "utf8");
+    expect(toml).toMatch(/^MCP_ALLOW_LOOPBACK_REDIRECTS = "false"$/m);
   });
 
   it("rejects a mix of allowed and disallowed redirect_uris", async () => {

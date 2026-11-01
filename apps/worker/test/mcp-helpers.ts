@@ -59,11 +59,11 @@ export async function pkce(): Promise<{ verifier: string; challenge: string }> {
   return { verifier, challenge };
 }
 
-export function authorizeQuery(challenge: string, scope = "read offline_access"): string {
+export function authorizeQuery(challenge: string, scope = "read offline_access", client = clientId, redirectUri = REDIRECT): string {
   return new URLSearchParams({
     response_type: "code",
-    client_id: clientId,
-    redirect_uri: REDIRECT,
+    client_id: client,
+    redirect_uri: redirectUri,
     scope,
     state: "state-123",
     code_challenge: challenge,
@@ -84,14 +84,22 @@ export async function postConsent(fields: Record<string, string>, jwt?: string):
   });
 }
 
+/** The redirect target of a post-consent "อนุญาตแล้ว"/"ปฏิเสธแล้ว" page, HTML entities decoded. */
+export function returnTargetFrom(html: string): URL {
+  const m = /<meta http-equiv="refresh" content="1;url=([^"]+)">/.exec(html);
+  if (!m?.[1]) throw new Error("meta refresh not found");
+  return new URL(m[1].replace(/&#(\d+);/g, (_, code: string) => String.fromCharCode(Number(code))));
+}
+
 export function csrfFrom(html: string): string {
   const m = /name="csrf" value="([^"]+)"/.exec(html);
   if (!m?.[1]) throw new Error("csrf not found");
   return m[1];
 }
 
-export async function register(redirectUris: string[]): Promise<Response> {
-  return call("/oauth/register", {
+/** The OAuth provider (and its DCR callback's env) is cached per origin, so a different env needs its own origin. */
+export async function register(redirectUris: string[], e: Env = env, origin = "http://localhost"): Promise<Response> {
+  return worker.fetch(new Request(`${origin}/oauth/register`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
@@ -101,7 +109,7 @@ export async function register(redirectUris: string[]): Promise<Response> {
       grant_types: ["authorization_code", "refresh_token"],
       response_types: ["code"],
     }),
-  });
+  }), e, ctx);
 }
 
 /** Full consent → token flow; returns the token response body. */
@@ -145,6 +153,7 @@ export async function setupOAuthHarness(): Promise<Env> {
     OWNER_EMAILS: `${OWNER}, other-owner@example.com`,
     MCP_ALLOWED_REDIRECT_HOSTS: "chatgpt.com,claude.ai",
     MCP_DCR_ENABLED: "true",
+    MCP_ALLOW_LOOPBACK_REDIRECTS: "true",
     CONSENT_CSRF_SECRET: "test-csrf-secret-not-real",
   };
   const params = { name: "RSASSA-PKCS1-v1_5", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" };

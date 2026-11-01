@@ -13,10 +13,15 @@ export type Env = {
   ACCESS_TEAM_DOMAIN?: string;
   /** Cloudflare Access application audience tag protecting /oauth/authorize. */
   ACCESS_AUD?: string;
-  /** Comma-separated owner emails or @domains allowed to approve OAuth consent. */
+  /** Comma-separated owner emails (exact match only, no @domain wildcards) allowed to approve OAuth consent. */
   OWNER_EMAILS?: string;
-  /** Comma-separated HTTPS redirect hosts; HTTP is allowed only for explicit-port native-app loopback URIs. */
+  /** Comma-separated HTTPS redirect hosts (exact hostname match). */
   MCP_ALLOWED_REDIRECT_HOSTS?: string;
+  /**
+   * Explicit-port HTTP loopback redirects (localhost / 127.0.0.1 / [::1]) for native clients are accepted at DCR and
+   * authorize only when exactly "true". Default "false".
+   */
+  MCP_ALLOW_LOOPBACK_REDIRECTS?: string;
   /** Dynamic client registration (/oauth/register) is accepted only when exactly "true". Default "false". */
   MCP_DCR_ENABLED?: string;
   /** HMAC key for one-time consent CSRF tokens (Worker secret). */
