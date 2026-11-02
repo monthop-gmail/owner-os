@@ -43,7 +43,7 @@ packages/shared  types + Zod schemas + settlement engine + แม่แบบง
   - `/mcp` ใช้ OAuth token เท่านั้น
   - token สองแบบนี้ใช้แทนกันไม่ได้ (มีเทสต์ตรวจว่า OAuth token เรียก `/api/*` แล้วได้ 401)
 
-### ตาราง D1 (13 ตาราง · 13 migration `0000`–`0012` · ไม่มีการแก้ migration เดิม)
+### ตาราง D1 (13 ตาราง · 14 migration `0000`–`0013` · ไม่มีการแก้ migration เดิม)
 
 | ตาราง | หน้าที่ |
 |---|---|
@@ -58,7 +58,7 @@ packages/shared  types + Zod schemas + settlement engine + แม่แบบง
 | `disaster_event_units` | แปลงที่โดนภัย + % ความเสียหาย (เก็บเป็น basis points) |
 | `disaster_event_evidence` | ผูกรูปหลักฐาน (GPS) กับเหตุภัย ใช้ประกอบการเคลม |
 | `ai_clients` | สวิตช์/เพดานรวมของ AI (แถว `mcp-default` จาก `0008` scope `read`) + แถวต่อ DCR client (`client_id` · `0012`) สำหรับเพดาน ตัดสิทธิ์ และ rate limit ของ client นั้น |
-| `mcp_audit` | log ทุก tool call ของ MCP (ไม่เก็บ argument/ผลลัพธ์/อีเมล) |
+| `mcp_audit` | log ทุก tool call ของ MCP (ไม่เก็บ argument/ผลลัพธ์/อีเมล) + `client_label` ป้ายแอปต้นทาง (`0013` · แสดงผลเท่านั้น) |
 | `ai_drafts` | ร่างที่ AI เสนอ รอเจ้าของยืนยันหรือปฏิเสธ |
 
 **R2 (`BUCKET`) เก็บไฟล์สองแบบ:**
@@ -86,7 +86,7 @@ pnpm install --frozen-lockfile
 # 2) Worker: secret สำหรับเครื่องนี้ + migration ลง D1 local (ใน .wrangler/)
 cd apps/worker
 cp .dev.vars.example .dev.vars   # API_TOKEN / CONSENT_CSRF_SECRET ค่า local-only (อย่าใช้ค่านี้บน production)
-pnpm db:migrate:local            # apply 0000–0012 ทั้ง 13 ไฟล์
+pnpm db:migrate:local            # apply 0000–0013 ทั้ง 14 ไฟล์
 
 # 3) เปิด Worker (อ่าน .dev.vars อัตโนมัติ) ที่ http://localhost:8787
 pnpm exec wrangler dev --local
@@ -257,6 +257,9 @@ settlement ทั้งหมดเป็น **preview** (`POST /api/contracts/:
     (client อื่นที่แถวยังเป็น `read` จะยังเสนอร่างไม่ได้)
 - **ควบคุมและตรวจสอบ:**
   - ทุก tool call ลง `mcp_audit` (เก็บ user hash · client_id · tool · ok/error_code · ms)
+  - audit เก็บ `client_label` = ป้ายแอปต้นทางที่ **client ประกาศเอง** (`fwd:` + `X-Forwarded-User-Agent` จาก Cloudflare MCP Portal
+    ถ้ามี ไม่งั้น `ua:` + `User-Agent` · ตัดเหลือ 120 ตัว · อักขระนอก ASCII พิมพ์ได้ 0x20–0x7E แทนด้วย `?` · ว่าง → NULL)
+    ใช้ดูว่า call มาจากแอปไหน (claude.ai / chatgpt.com / Codex / bot) เท่านั้น — **ห้ามใช้ยืนยันตัวตน** และไม่มีผลกับสิทธิ์ scope หรือ rate limit
   - rate limit ต่อ client มาจาก `rate_per_minute`/`rate_per_day` ของแถว `client:<client_id>` (ค่าเริ่มต้น 60 / 5000)
   - ถ้าเช็ก rate limit ไม่ได้: tool อ่าน fail-open · tool ร่าง fail-closed
   - ตัดสิทธิ์ AI ทีละตัว: ตั้ง `revoked_at` ของแถว `client:<client_id>` (client อื่นใช้ต่อได้)
@@ -286,7 +289,7 @@ settlement ทั้งหมดเป็น **preview** (`POST /api/contracts/:
 6. **Cloudflare Access:**
    - สร้าง application ครอบ path `/oauth/authorize` และใส่ policy ให้เฉพาะอีเมลเจ้าของ
    - ห้ามครอบ `/oauth/token`, `/oauth/register`, `/.well-known/*` และ `/mcp` เพราะ AI ต้องเรียกได้โดยตรง
-7. **Migration remote ทั้งหมด:** `cd apps/worker && pnpm exec wrangler d1 migrations apply owner-os --remote` (0000–0012 ซึ่งรวมแถว `mcp-default`)
+7. **Migration remote ทั้งหมด:** `cd apps/worker && pnpm exec wrangler d1 migrations apply owner-os --remote` (0000–0013 ซึ่งรวมแถว `mcp-default`)
 8. **Deploy:** `pnpm exec wrangler deploy` (ใน `apps/worker`) · เว็บ build ด้วย `pnpm --filter @owner-os/web build` ได้ `apps/web/dist`
    · repo ยังไม่มี config deploy ของเว็บ โฮสต์ที่ใช้ต้องส่ง `/api` ไปยัง Worker origin เดียวกัน (ตอน dev ใช้ proxy ของ Vite)
 9. **Smoke test:**

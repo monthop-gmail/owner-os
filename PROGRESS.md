@@ -46,3 +46,4 @@
 - [x] Task 5.4a: ai_clients ต่อ DCR client — เพดานสิทธิ์/ตัดสิทธิ์/rate limit แยกต่อ client
 - [x] Task 5.4b: ปิด consent phishing — DCR ปิดเป็นค่าเริ่มต้น · client ใหม่อนุญาตได้ 15 นาที · consent แสดง client_id/redirect_uri เต็ม
 - [x] Task 7.1: native OAuth client — loopback redirect เป็น opt-in (`MCP_ALLOW_LOOPBACK_REDIRECTS`) · หลังอนุญาต/ปฏิเสธใช้หน้า HTML + meta refresh (เลี่ยง CSP form-action) · `OWNER_EMAILS` เทียบอีเมลตรงตัว
+- [x] Task 7.2a: `mcp_audit.client_label` (migration `0013`) — ป้ายแอปต้นทางจาก `X-Forwarded-User-Agent` (`fwd:`) / `User-Agent` (`ua:`) · client ประกาศเอง แสดงผลเท่านั้น ไม่ใช้ตัดสินสิทธิ์/scope/rate
