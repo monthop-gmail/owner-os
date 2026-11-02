@@ -261,6 +261,11 @@ export const mcp_audit = sqliteTable(
     ok: integer("ok").notNull(),
     error_code: text("error_code"),
     ms: integer("ms").notNull(),
+    /**
+     * Client-declared, display only: `fwd:` + X-Forwarded-User-Agent (MCP Portal) or `ua:` + User-Agent,
+     * sanitised. Shows which app made the call; never used for auth, scopes or rate limits.
+     */
+    client_label: text("client_label"),
   },
   (t) => [
     index("mcp_audit_at_idx").on(t.at),

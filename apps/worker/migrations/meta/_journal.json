@@ -92,6 +92,13 @@
       "when": 1792917837604,
       "tag": "0012_ai_clients_client_id",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "6",
+      "when": 1793637431885,
+      "tag": "0013_audit_client_label",
+      "breakpoints": true
     }
   ]
 }

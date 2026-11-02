@@ -1,0 +1,1 @@
+ALTER TABLE `mcp_audit` ADD `client_label` text;

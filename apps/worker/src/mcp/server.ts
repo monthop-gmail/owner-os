@@ -763,15 +763,32 @@ async function callTool(
 
 type McpAuth = { scope?: string[]; userId?: string; clientId?: string };
 
+export const CLIENT_LABEL_MAX = 120;
+
+/**
+ * Client-declared, display only: which app made the call (claude.ai / chatgpt.com / Codex / bot), from the
+ * MCP Portal's X-Forwarded-User-Agent (`fwd:`) or else User-Agent (`ua:`). Any client can set these headers,
+ * so this label must never feed auth, scopes, rate limits or ai_clients. Value is cut to 120 chars,
+ * non-printable-ASCII chars become `?`, and empty/missing → null.
+ */
+export function clientLabel(headers: Pick<Headers, "get">): string | null {
+  const clean = (raw: string | null) =>
+    (raw ?? "").trim().slice(0, CLIENT_LABEL_MAX).replace(/[^\x20-\x7e]/g, "?");
+  const fwd = clean(headers.get("x-forwarded-user-agent"));
+  if (fwd) return `fwd:${fwd}`;
+  const ua = clean(headers.get("user-agent"));
+  return ua ? `ua:${ua}` : null;
+}
+
 /** One mcp_audit row per tools/call: no arguments, results or emails are stored. Never fails the call. */
 async function writeAudit(
   env: Env,
   auth: McpAuth | undefined,
-  entry: { tool: string; errorCode: string | null; ms: number },
+  entry: { tool: string; errorCode: string | null; ms: number; clientLabel: string | null },
 ): Promise<void> {
   try {
     await env.DB.prepare(
-      "INSERT INTO mcp_audit (id, at, user_hash, client_id, tool, ok, error_code, ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO mcp_audit (id, at, user_hash, client_id, tool, ok, error_code, ms, client_label) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
       .bind(
         crypto.randomUUID(),
@@ -782,6 +799,7 @@ async function writeAudit(
         entry.errorCode === null ? 1 : 0,
         entry.errorCode,
         entry.ms,
+        entry.clientLabel,
       )
       .run();
   } catch (err) {
@@ -921,6 +939,8 @@ export const mcpApiHandler = {
           tool: tool?.name ?? "(unknown)",
           errorCode: outcome ? outcome.errorCode : "unknown_tool",
           ms: Date.now() - started,
+          // Client-declared, display only — read after every auth/scope/rate decision above and never used by them.
+          clientLabel: clientLabel(request.headers),
         });
         if (typeof ctx.waitUntil === "function") ctx.waitUntil(audit);
         else await audit;
