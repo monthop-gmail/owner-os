@@ -28,7 +28,11 @@ export function allowedRedirectHosts(env: Env): string[] {
   return hosts.length > 0 ? hosts : splitList(DEFAULT_REDIRECT_HOSTS);
 }
 
-/** redirect_uri must be https and its host exactly one of the allowlisted hosts. */
+/**
+ * HTTPS redirects must use an exact allowlisted host. Only when MCP_ALLOW_LOOPBACK_REDIRECTS is exactly "true",
+ * native OAuth clients may additionally use an explicit-port HTTP loopback redirect; never extend this exception
+ * to arbitrary HTTP hosts.
+ */
 export function isAllowedRedirectUri(uri: unknown, env: Env): boolean {
   if (typeof uri !== "string") return false;
   let url: URL;
@@ -37,7 +41,11 @@ export function isAllowedRedirectUri(uri: unknown, env: Env): boolean {
   } catch {
     return false;
   }
-  return url.protocol === "https:" && !url.username && !url.password && allowedRedirectHosts(env).includes(url.hostname.toLowerCase());
+  if (url.username || url.password || url.hash) return false;
+  if (url.protocol === "https:") return allowedRedirectHosts(env).includes(url.hostname.toLowerCase());
+  if (env.MCP_ALLOW_LOOPBACK_REDIRECTS !== "true") return false;
+  const loopbackHosts = new Set(["localhost", "127.0.0.1", "[::1]"]);
+  return url.protocol === "http:" && loopbackHosts.has(url.hostname.toLowerCase()) && url.port !== "";
 }
 
 /** Keeps only supported scopes; `read` is always granted (it is the only resource capability). */
@@ -218,7 +226,7 @@ oauthRoutes.post("/authorize", async (c) => {
     const url = new URL(request.redirectUri);
     url.searchParams.set("error", "access_denied");
     if (request.state) url.searchParams.set("state", request.state);
-    return c.redirect(url.toString(), 302);
+    return c.html(returnPage("ปฏิเสธแล้ว", url.toString()), 200, SECURITY_HEADERS);
   }
 
   // Per-client row (ceiling, revocation, rate limits). Created read-only on first approval; an existing row is
@@ -236,12 +244,26 @@ oauthRoutes.post("/authorize", async (c) => {
     scope: request.scope,
     props: { email },
   });
-  return c.redirect(redirectTo, 302);
+  return c.html(returnPage("อนุญาตแล้ว", redirectTo), 200, SECURITY_HEADERS);
 });
 
 /**
+ * Post-consent page that sends the browser back to the client's redirect_uri. A 302/303 after the form POST would
+ * be blocked by CSP `form-action 'self'` (cross-origin redirect), so navigate with meta refresh plus a link instead.
+ */
+function returnPage(title: string, redirectTo: string): string {
+  const target = escapeHtml(redirectTo);
+  return `<!doctype html><html lang="th"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="refresh" content="1;url=${target}"><title>${escapeHtml(title)} · owner-os</title></head>
+<body style="font-family:system-ui,sans-serif;max-width:36rem;margin:3rem auto;padding:0 1rem">
+<h1>${escapeHtml(title)}</h1><p>กำลังกลับไปยังแอปที่ขอสิทธิ์...</p>
+<p>ถ้าหน้าไม่เปลี่ยน ให้ <a href="${target}" rel="noreferrer">กดที่นี่เพื่อกลับไปยังแอป</a></p>
+</body></html>`;
+}
+
+/**
  * Builds the OAuth provider for this request's origin (the resource URL must be absolute).
- * DCR rejects redirect_uris that are not https on an allowlisted host.
+ * DCR accepts HTTPS on allowlisted hosts, plus native-app HTTP loopback redirects when MCP_ALLOW_LOOPBACK_REDIRECTS is "true".
  */
 export function createOAuthProvider(
   env: Env,
@@ -265,7 +287,10 @@ export function createOAuthProvider(
       }
       const uris = clientMetadata.redirect_uris;
       if (!Array.isArray(uris) || uris.length === 0 || !uris.every((u) => isAllowedRedirectUri(u, env))) {
-        return { code: "invalid_redirect_uri", description: "redirect_uris must be https on an allowed host" };
+        return {
+          code: "invalid_redirect_uri",
+          description: "redirect_uris must be https on an allowed host (or http on loopback with an explicit port, if enabled)",
+        };
       }
     },
   });

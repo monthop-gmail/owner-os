@@ -25,5 +25,7 @@ ACCESS_TEAM_DOMAIN = ""
 ACCESS_AUD = ""
 OWNER_EMAILS = ""
 MCP_ALLOWED_REDIRECT_HOSTS = "chatgpt.com,claude.ai"
+# Set to "true" only when a native client (e.g. Codex CLI) needs http://localhost|127.0.0.1|[::1]:<port> redirects.
+MCP_ALLOW_LOOPBACK_REDIRECTS = "false"
 # Set to "true" only while connecting a connector (then back to "false"): /oauth/register is refused otherwise.
 MCP_DCR_ENABLED = "false"

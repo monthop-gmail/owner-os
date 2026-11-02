@@ -214,9 +214,11 @@ settlement ทั้งหมดเป็น **preview** (`POST /api/contracts/:
   - ลงทะเบียนผ่าน `/oauth/register` (DCR) → `/oauth/authorize` → `/oauth/token` (PKCE S256)
   - **DCR ปิดเป็นค่าเริ่มต้น:** `/oauth/register` รับเฉพาะเมื่อ `MCP_DCR_ENABLED` เป็น `"true"` ตรงตัว (ไม่งั้นได้ 403 `registration_disabled`)
     · เจ้าของเปิดชั่วคราวตอนกดเชื่อม connector เอง แล้วปิดกลับ (ดูข้อ 8)
-  - redirect_uri ต้องเป็น https และ host ต้องอยู่ใน `MCP_ALLOWED_REDIRECT_HOSTS`
+  - redirect_uri ต้องเป็น https และ host ต้องอยู่ใน `MCP_ALLOWED_REDIRECT_HOSTS` (เทียบ host ตรงตัว)
+  - **native client (เช่น Codex CLI) แบบ loopback เป็น opt-in:** รับ `http://localhost|127.0.0.1|[::1]:<port>` (ต้องระบุ port · ห้าม fragment/userinfo)
+    เฉพาะเมื่อ `MCP_ALLOW_LOOPBACK_REDIRECTS` เป็น `"true"` ตรงตัว · ไม่งั้นปฏิเสธเหมือน http ทั่วไป ทั้งตอน DCR (400) และตอน authorize (400)
 - **หน้า consent** (`/oauth/authorize`):
-  - อยู่หลัง **Cloudflare Access**: ตรวจ JWT `Cf-Access-Jwt-Assertion` แบบ RS256 และอีเมลต้องอยู่ใน `OWNER_EMAILS`
+  - อยู่หลัง **Cloudflare Access**: ตรวจ JWT `Cf-Access-Jwt-Assertion` แบบ RS256 และอีเมลต้องอยู่ใน `OWNER_EMAILS` แบบตรงตัว (ไม่รับ `@domain`)
   - CSRF ใช้ครั้งเดียว
   - ถ้าขาด config ใดจะตอบ 503
   - **กัน consent phishing** (callback ของ chatgpt.com/claude.ai เป็น path ร่วมของทุกบัญชี ใครก็ลงทะเบียน client ที่ชี้ไปที่นั่นได้):
@@ -227,6 +229,8 @@ settlement ทั้งหมดเป็น **preview** (`POST /api/contracts/:
     - หน้า consent แสดงชื่อแอป (แอปตั้งเอง) · `client_id` · เวลาที่ลงทะเบียน (เวลาไทย) · redirect_uri เต็มรวม path
       · ป้าย "client ใหม่ ยังไม่เคยอนุญาต" / "เคยอนุญาตแล้ว"
       · และคำเตือน "กดอนุญาตเฉพาะเมื่อคุณเพิ่งกดเชื่อมต่อเองเมื่อสักครู่ ถ้าได้ลิงก์นี้จากคนอื่น ให้กดปฏิเสธ"
+  - **หลังกดอนุญาต/ปฏิเสธ** ตอบ 200 หน้า HTML ("อนุญาตแล้ว" / "ปฏิเสธแล้ว" · "กำลังกลับไปยังแอปที่ขอสิทธิ์") ที่ meta refresh + ลิงก์ไปยัง redirect_uri
+    (อนุญาต: มี `code` + `state` · ปฏิเสธ: มี `error=access_denied` + `state`) แทน 302/303 เพราะ CSP `form-action 'self'` ทำให้เบราว์เซอร์บล็อก redirect ข้าม origin หลัง POST
   - เมื่อกดอนุญาตครั้งแรก ระบบสร้างแถว `client:<client_id>` ใน `ai_clients` ด้วย scope `read` (แถวที่มีอยู่แล้วจะไม่ถูกเขียนทับหรืออัปเกรด)
 - **tool 15 ตัว** (`apps/worker/src/mcp/server.ts`):
   - **อ่าน** (scope `read`) 10 ตัว: `list_assets` · `get_asset` · `list_work_orders` · `get_work_order` · `list_evidence` · `list_crop_cycles` · `list_harvest_logs` · `list_contracts` · `list_disaster_events` · `get_disaster_impact`
@@ -275,9 +279,10 @@ settlement ทั้งหมดเป็น **preview** (`POST /api/contracts/:
 5. **Vars** (ใน `[vars]` ของ `wrangler.toml` หรือใน dashboard):
    - `ACCESS_TEAM_DOMAIN` (`<team>.cloudflareaccess.com`)
    - `ACCESS_AUD` (audience tag ของ Access application)
-   - `OWNER_EMAILS` (คั่นด้วย `,`)
+   - `OWNER_EMAILS` (อีเมลเต็ม คั่นด้วย `,` · ไม่รับ `@domain`)
    - `MCP_ALLOWED_REDIRECT_HOSTS` (ค่าเริ่มต้น `chatgpt.com,claude.ai`)
    - `MCP_DCR_ENABLED` (ค่าเริ่มต้น `"false"` = ปิดการลงทะเบียน client ใหม่)
+   - `MCP_ALLOW_LOOPBACK_REDIRECTS` (ค่าเริ่มต้น `"false"` · ตั้ง `"true"` เฉพาะเมื่อจะใช้ native client ที่ redirect กลับ loopback เช่น Codex CLI)
 6. **Cloudflare Access:**
    - สร้าง application ครอบ path `/oauth/authorize` และใส่ policy ให้เฉพาะอีเมลเจ้าของ
    - ห้ามครอบ `/oauth/token`, `/oauth/register`, `/.well-known/*` และ `/mcp` เพราะ AI ต้องเรียกได้โดยตรง

@@ -123,7 +123,7 @@ describe("only recently registered clients may be approved for the first time", 
   it("approved client (row) registered long ago → consent page marked as already approved", async () => {
     const id = await newClient();
     const page = await consentGet(id);
-    expect((await approve(csrfFrom(await page.text()))).status).toBe(302);
+    expect((await approve(csrfFrom(await page.text()))).status).toBe(200);
     expect(await clientRow(id)).toEqual({ scopes: "read", revoked_at: null });
 
     await registeredAgo(id, 30 * 24 * 3600);
@@ -134,7 +134,7 @@ describe("only recently registered clients may be approved for the first time", 
 
   it("revoked client → GET and POST 403 client_revoked, and the row stays revoked", async () => {
     const id = await newClient();
-    expect((await approve(csrfFrom(await (await consentGet(id)).text()))).status).toBe(302);
+    expect((await approve(csrfFrom(await (await consentGet(id)).text()))).status).toBe(200);
     const csrf = csrfFrom(await (await consentGet(id)).text());
     const revokedAt = Date.now();
     await env.DB.prepare("UPDATE ai_clients SET revoked_at = ? WHERE client_id = ?").bind(revokedAt, id).run();
